@@ -12,11 +12,13 @@ Default settings:
 | Density sample grid | `17³` |
 | Cell size | `2m` |
 | Chunk world size | `32m` |
-| Stream radius | `3` horizontal chunks |
-| Vertical layers | `-1, 0, 1` |
-| Worker count | `min(4, hardwareConcurrency - 2)` |
+| Base SDF stream radius | `7` horizontal chunks |
+| High-altitude SDF stream radius | up to `11` horizontal chunks |
+| Vertical layers | `-1, 0, 1, 2` |
+| New chunk requests | up to `64` per frame |
+| Worker count | `min(6, hardwareConcurrency - 2)` |
 
-On a modern desktop, the first load should progressively fill in terrain rather than blocking the main thread.
+On a modern desktop, the first load should progressively fill in terrain rather than blocking the main thread. The widened SDF ring is prioritized from near to far and throttles new chunk requests per frame. The additional `y=2` vertical layer prevents high ridges and mountains from being clipped when viewing the world from above.
 
 ## Known hotspots
 

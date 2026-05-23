@@ -2,25 +2,34 @@ import { FlyCamera, add, scale, vec3, normalize } from './math.js';
 import { Renderer } from './renderer.js';
 
 const CHUNK_WORLD_SIZE = 32; // must match native/voxel_core.c: 16 cells * 2m
-const STREAM_RADIUS = 3;
-const VERTICAL_CHUNKS = [-1, 0, 1];
-const MAX_QUEUE = 300;
+const DEFAULT_STREAM_RADIUS = 7;
+const MIN_STREAM_RADIUS = 3;
+const MAX_STREAM_RADIUS = 11;
+const ALTITUDE_BOOST_START = 96;
+const ALTITUDE_BOOST_CHUNK_STEP = 64;
+const VERTICAL_CHUNKS = [-1, 0, 1, 2];
+const MAX_QUEUE = 2200;
+const MAX_NEW_CHUNK_REQUESTS_PER_FRAME = 64;
+const EVICT_HYSTERESIS_CHUNKS = 2.5;
 
 function keyOf(cx, cy, cz, lod = 0) { return `${cx},${cy},${cz},${lod}`; }
 function parseKey(key) { return key.split(',').map(Number); }
 function chunkCoord(v) { return Math.floor(v / CHUNK_WORLD_SIZE); }
-function distSq2(a, b, c, d) { const x = a - c, z = b - d; return x * x + z * z; }
+function clampInt(v, lo, hi) { return Math.max(lo, Math.min(hi, v | 0)); }
 
 class ChunkStreamer {
   constructor(renderer, overlay) {
     this.renderer = renderer;
     this.overlay = overlay;
-    this.workerCount = Math.min(4, Math.max(1, (navigator.hardwareConcurrency || 4) - 2));
+    this.workerCount = Math.min(6, Math.max(1, (navigator.hardwareConcurrency || 6) - 2));
     this.workers = [];
     this.idle = [];
     this.queue = [];
     this.states = new Map();
     this.version = 1;
+    this.baseStreamRadius = DEFAULT_STREAM_RADIUS;
+    this.effectiveStreamRadius = DEFAULT_STREAM_RADIUS;
+    this.currentTargetChunks = 0;
     this.lastStats = { generated: 0, discarded: 0, avgMeshMs: 0, uploadMB: 0, overflow: 0 };
     this.meshTimes = [];
   }
@@ -53,14 +62,28 @@ class ChunkStreamer {
     this.overlay.classList.add('error');
   }
 
+  streamRadiusForCamera(camera) {
+    const altitudeBoost = Math.max(
+      0,
+      Math.floor((Math.max(0, camera.position[1]) - ALTITUDE_BOOST_START) / ALTITUDE_BOOST_CHUNK_STEP),
+    );
+    return clampInt(this.baseStreamRadius + altitudeBoost, MIN_STREAM_RADIUS, MAX_STREAM_RADIUS);
+  }
+
+  adjustStreamRadius(delta) {
+    this.baseStreamRadius = clampInt(this.baseStreamRadius + delta, MIN_STREAM_RADIUS, MAX_STREAM_RADIUS);
+  }
+
   requiredKeysForCamera(camera) {
     const cx0 = chunkCoord(camera.position[0]);
     const cz0 = chunkCoord(camera.position[2]);
+    const radius = this.streamRadiusForCamera(camera);
+    this.effectiveStreamRadius = radius;
     const keys = [];
-    for (let dz = -STREAM_RADIUS; dz <= STREAM_RADIUS; dz++) {
-      for (let dx = -STREAM_RADIUS; dx <= STREAM_RADIUS; dx++) {
+    for (let dz = -radius; dz <= radius; dz++) {
+      for (let dx = -radius; dx <= radius; dx++) {
         const dist = Math.hypot(dx, dz);
-        if (dist > STREAM_RADIUS + 0.35) continue;
+        if (dist > radius + 0.35) continue;
         for (const cy of VERTICAL_CHUNKS) {
           const cx = cx0 + dx;
           const cz = cz0 + dz;
@@ -69,26 +92,31 @@ class ChunkStreamer {
       }
     }
     keys.sort((a, b) => a.priority - b.priority);
+    this.currentTargetChunks = keys.length;
     return keys;
   }
 
   update(camera) {
     const required = this.requiredKeysForCamera(camera);
-    const requiredSet = new Set(required.map(k => k.key));
+    let enqueuedThisFrame = 0;
     for (const item of required) {
       const state = this.states.get(item.key);
-      if (!state && this.queue.length < MAX_QUEUE) {
+      if (!state && this.queue.length < MAX_QUEUE && enqueuedThisFrame < MAX_NEW_CHUNK_REQUESTS_PER_FRAME) {
         this.queue.push({ ...item, version: this.version });
         this.states.set(item.key, 'queued');
+        enqueuedThisFrame++;
       }
     }
 
     // Evict chunks that are outside the streaming hysteresis ring.
+    const radius = this.effectiveStreamRadius || this.streamRadiusForCamera(camera);
     const ccx = chunkCoord(camera.position[0]);
     const ccz = chunkCoord(camera.position[2]);
+    const minCy = VERTICAL_CHUNKS[0];
+    const maxCy = VERTICAL_CHUNKS[VERTICAL_CHUNKS.length - 1];
     for (const [key, state] of [...this.states.entries()]) {
       const [cx, cy, cz] = parseKey(key);
-      const far = Math.hypot(cx - ccx, cz - ccz) > STREAM_RADIUS + 1.65 || Math.abs(cy) > 1;
+      const far = Math.hypot(cx - ccx, cz - ccz) > radius + EVICT_HYSTERESIS_CHUNKS || cy < minCy || cy > maxCy;
       if (far && state !== 'pending') {
         this.renderer.removeChunk(key);
         this.states.delete(key);
@@ -194,6 +222,14 @@ function setupInput(canvas, camera, streamer) {
   const keys = new Set();
   window.addEventListener('keydown', (e) => {
     keys.add(e.code);
+    if (e.code === 'BracketRight' || e.code === 'Equal') {
+      streamer.adjustStreamRadius(1);
+      e.preventDefault();
+    }
+    if (e.code === 'BracketLeft' || e.code === 'Minus') {
+      streamer.adjustStreamRadius(-1);
+      e.preventDefault();
+    }
     if (e.code === 'KeyE') {
       const target = add(camera.position, scale(camera.forward(), 34));
       streamer.addEdit(target, 9.0);
@@ -236,11 +272,12 @@ function updateOverlay(el, fps, renderer, streamer, camera) {
   el.innerHTML = `
     <b>Storm Canyon Voxel Prototype</b><br/>
     FPS: ${fps.toFixed(0)} | Draws: ${rstats.drawCalls} | Tris: ${(rstats.terrainTriangles / 1000).toFixed(0)}k<br/>
+    Render radius: ${streamer.baseStreamRadius} base / ${streamer.effectiveStreamRadius} effective (${(streamer.effectiveStreamRadius * CHUNK_WORLD_SIZE).toFixed(0)}m) | Target chunks: ${streamer.currentTargetChunks}<br/>
     Chunks loaded/queued/pending: ${counts.loaded}/${counts.queued}/${counts.pending} | Workers: ${counts.workers} (${counts.idle} idle)<br/>
     Vegetation instances: ${rstats.vegetationInstances} | Avg WASM mesh: ${streamer.lastStats.avgMeshMs.toFixed(1)} ms<br/>
     Last upload: ${streamer.lastStats.uploadMB.toFixed(2)} MB | Generated: ${streamer.lastStats.generated} | Stale discarded: ${streamer.lastStats.discarded}<br/>
     Camera: ${camera.position[0].toFixed(1)}, ${camera.position[1].toFixed(1)}, ${camera.position[2].toFixed(1)}<br/>
-    <span>Click to capture mouse. WASD + Space/Ctrl fly. Shift fast. E carves SDF terrain. R resets edits.</span>
+    <span>Click to capture mouse. WASD + Space/Ctrl fly. Shift fast. [ / ] or - / = changes render distance. E carves SDF terrain. R resets edits.</span>
   `;
 }
 

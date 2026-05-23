@@ -85,7 +85,7 @@ fn fs_main(input: VertexOut) -> @location(0) vec4<f32> {
   color *= (sky + diffuse * 0.95 + rim) * input.ao;
 
   let d = distance(scene.camera.xyz, input.world);
-  let fog = clamp(1.0 - exp(-d * 0.0038), 0.0, 0.72);
+  let fog = clamp(1.0 - exp(-d * 0.0020), 0.0, 0.62);
   let fogColor = mix(vec3<f32>(0.63, 0.71, 0.80), vec3<f32>(0.88, 0.78, 0.62), max(scene.sun.y, 0.0) * 0.25);
   color = mix(color, fogColor, fog);
   return vec4<f32>(color, 1.0);
@@ -130,7 +130,7 @@ fn fs_main(input: VertexOut) -> @location(0) vec4<f32> {
   let foam = smoothstep(0.72, 1.0, input.edge);
   color = mix(color, vec3<f32>(0.74, 0.86, 0.82), foam * 0.32);
   let d = distance(scene.camera.xyz, input.world);
-  let fog = clamp(1.0 - exp(-d * 0.0038), 0.0, 0.68);
+  let fog = clamp(1.0 - exp(-d * 0.0020), 0.0, 0.58);
   color = mix(color, vec3<f32>(0.65, 0.72, 0.80), fog);
   return vec4<f32>(color, 0.68);
 }
@@ -183,7 +183,7 @@ fn fs_main(input: VertexOut) -> @location(0) vec4<f32> {
   if (input.kind < 0.5 && input.part > 0.5) { color = vec3<f32>(0.22, 0.38, 0.12); }
   color *= 0.42 + diffuse * 0.70;
   let d = distance(scene.camera.xyz, input.world);
-  let fog = clamp(1.0 - exp(-d * 0.0045), 0.0, 0.80);
+  let fog = clamp(1.0 - exp(-d * 0.0024), 0.0, 0.70);
   color = mix(color, vec3<f32>(0.64, 0.72, 0.80), fog);
   return vec4<f32>(color, 1.0);
 }
