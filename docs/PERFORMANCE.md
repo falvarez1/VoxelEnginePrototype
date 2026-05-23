@@ -14,11 +14,12 @@ Default settings:
 | Chunk world size | `32m` |
 | Base SDF stream radius | `7` horizontal chunks |
 | High-altitude SDF stream radius | up to `11` horizontal chunks |
+| Far vista radius | `1536m` heightfield mesh at `32m` spacing |
 | Vertical layers | `-1, 0, 1, 2` |
 | New chunk requests | up to `64` per frame |
 | Worker count | `min(6, hardwareConcurrency - 2)` |
 
-On a modern desktop, the first load should progressively fill in terrain rather than blocking the main thread. The widened SDF ring is prioritized from near to far and throttles new chunk requests per frame. The additional `y=2` vertical layer prevents high ridges and mountains from being clipped when viewing the world from above.
+On a modern desktop, the first load should progressively fill in terrain rather than blocking the main thread. The widened SDF ring is prioritized from near to far and throttles new chunk requests per frame. The additional `y=2` vertical layer prevents high ridges and mountains from being clipped when viewing the world from above. A lightweight camera-centered heightfield vista fills the long-distance horizon immediately, so flying upward shows a much larger landscape without forcing every distant tile through the volumetric mesher.
 
 ## Known hotspots
 
@@ -37,7 +38,7 @@ On a modern desktop, the first load should progressively fill in terrain rather 
 5. Combine chunks into GPU pages/arenas.
 6. Add CPU frustum culling, then WebGPU compute culling.
 7. Batch indirect draw arguments into one buffer.
-8. Add a far heightfield clipmap so volumetric chunks are only near-field.
+8. Turn the current single far heightfield vista into true concentric clipmap rings.
 
 ## Production budgets
 

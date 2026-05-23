@@ -89,7 +89,7 @@ export class FlyCamera {
     const f = this.forward();
     const center = add(this.position, f);
     const view = mat4LookAt(this.position, center, vec3(0, 1, 0));
-    const proj = mat4Perspective(70 * Math.PI / 180, aspect, 0.1, 2400.0);
+    const proj = mat4Perspective(70 * Math.PI / 180, aspect, 0.1, 5000.0);
     return mat4Multiply(proj, view);
   }
 }

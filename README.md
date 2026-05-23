@@ -12,7 +12,7 @@ This repo is intentionally dependency-light: it runs as a static web app, includ
 - Marching-tetrahedra surface extraction in WASM.
 - WebGPU rasterized triangle terrain meshes.
 - Worker-based chunk generation and meshing.
-- Larger render distance: 7-chunk default SDF field, altitude-aware expansion up to 11 chunks, plus upper mountain chunk coverage.
+- Larger render distance: 7-chunk default SDF field, altitude-aware expansion up to 11 chunks, upper mountain chunk coverage, and a 1.5km camera-centered far heightfield vista for high-altitude flight.
 - Chunk eviction and dirty remeshing after edits.
 - Procedural river mesh with animated water.
 - Deterministic vegetation patches rendered with instancing.

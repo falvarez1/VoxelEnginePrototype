@@ -271,8 +271,8 @@ function updateOverlay(el, fps, renderer, streamer, camera) {
   const rstats = renderer.stats;
   el.innerHTML = `
     <b>Storm Canyon Voxel Prototype</b><br/>
-    FPS: ${fps.toFixed(0)} | Draws: ${rstats.drawCalls} | Tris: ${(rstats.terrainTriangles / 1000).toFixed(0)}k<br/>
-    Render radius: ${streamer.baseStreamRadius} base / ${streamer.effectiveStreamRadius} effective (${(streamer.effectiveStreamRadius * CHUNK_WORLD_SIZE).toFixed(0)}m) | Target chunks: ${streamer.currentTargetChunks}<br/>
+    FPS: ${fps.toFixed(0)} | Draws: ${rstats.drawCalls} | SDF tris: ${(rstats.terrainTriangles / 1000).toFixed(0)}k | Far tris: ${((rstats.farTerrainTriangles ?? 0) / 1000).toFixed(0)}k<br/>
+    Render radius: ${streamer.baseStreamRadius} base / ${streamer.effectiveStreamRadius} effective (${(streamer.effectiveStreamRadius * CHUNK_WORLD_SIZE).toFixed(0)}m) | Far vista: 1.5km | Target chunks: ${streamer.currentTargetChunks}<br/>
     Chunks loaded/queued/pending: ${counts.loaded}/${counts.queued}/${counts.pending} | Workers: ${counts.workers} (${counts.idle} idle)<br/>
     Vegetation instances: ${rstats.vegetationInstances} | Avg WASM mesh: ${streamer.lastStats.avgMeshMs.toFixed(1)} ms<br/>
     Last upload: ${streamer.lastStats.uploadMB.toFixed(2)} MB | Generated: ${streamer.lastStats.generated} | Stale discarded: ${streamer.lastStats.discarded}<br/>

@@ -1,6 +1,11 @@
-import { riverCenter, valueNoise2 } from './terrain_math.js';
+import { riverCenter, terrainHeight, terrainMaterial, terrainNormal, valueNoise2 } from './terrain_math.js';
 
 function roundUp4(n) { return (n + 3) & ~3; }
+
+const FAR_TERRAIN_RADIUS = 1536;
+const FAR_TERRAIN_STEP = 32;
+const FAR_TERRAIN_HOLE_RADIUS = 175;
+const FAR_TERRAIN_SNAP = 128;
 
 function createBufferWithData(device, data, usage, label) {
   if (!data || data.byteLength === 0) return null;
@@ -85,7 +90,7 @@ fn fs_main(input: VertexOut) -> @location(0) vec4<f32> {
   color *= (sky + diffuse * 0.95 + rim) * input.ao;
 
   let d = distance(scene.camera.xyz, input.world);
-  let fog = clamp(1.0 - exp(-d * 0.0020), 0.0, 0.62);
+  let fog = clamp(1.0 - exp(-d * 0.00165), 0.0, 0.76);
   let fogColor = mix(vec3<f32>(0.63, 0.71, 0.80), vec3<f32>(0.88, 0.78, 0.62), max(scene.sun.y, 0.0) * 0.25);
   color = mix(color, fogColor, fog);
   return vec4<f32>(color, 1.0);
@@ -130,7 +135,7 @@ fn fs_main(input: VertexOut) -> @location(0) vec4<f32> {
   let foam = smoothstep(0.72, 1.0, input.edge);
   color = mix(color, vec3<f32>(0.74, 0.86, 0.82), foam * 0.32);
   let d = distance(scene.camera.xyz, input.world);
-  let fog = clamp(1.0 - exp(-d * 0.0020), 0.0, 0.58);
+  let fog = clamp(1.0 - exp(-d * 0.00165), 0.0, 0.72);
   color = mix(color, vec3<f32>(0.65, 0.72, 0.80), fog);
   return vec4<f32>(color, 0.68);
 }
@@ -183,7 +188,7 @@ fn fs_main(input: VertexOut) -> @location(0) vec4<f32> {
   if (input.kind < 0.5 && input.part > 0.5) { color = vec3<f32>(0.22, 0.38, 0.12); }
   color *= 0.42 + diffuse * 0.70;
   let d = distance(scene.camera.xyz, input.world);
-  let fog = clamp(1.0 - exp(-d * 0.0024), 0.0, 0.70);
+  let fog = clamp(1.0 - exp(-d * 0.00235), 0.0, 0.82);
   color = mix(color, vec3<f32>(0.64, 0.72, 0.80), fog);
   return vec4<f32>(color, 1.0);
 }
@@ -233,8 +238,10 @@ export class Renderer {
     this.chunks = new Map();
     this.vegetation = new Map();
     this.water = null;
+    this.farTerrain = null;
     this.lastWaterCenter = { x: Infinity, z: Infinity };
-    this.stats = { drawCalls: 0, terrainTriangles: 0, vegetationInstances: 0 };
+    this.lastFarTerrainCenter = { x: Infinity, z: Infinity };
+    this.stats = { drawCalls: 0, terrainTriangles: 0, farTerrainTriangles: 0, vegetationInstances: 0 };
   }
 
   async init() {
@@ -396,13 +403,13 @@ export class Renderer {
   updateWater(cameraPosition, force = false) {
     const dx = cameraPosition[0] - this.lastWaterCenter.x;
     const dz = cameraPosition[2] - this.lastWaterCenter.z;
-    if (!force && Math.hypot(dx, dz) < 64 && this.water) return;
+    if (!force && Math.hypot(dx, dz) < 128 && this.water) return;
     this.lastWaterCenter = { x: cameraPosition[0], z: cameraPosition[2] };
     this.water?.vertexBuffer?.destroy?.();
     this.water?.indexBuffer?.destroy?.();
 
-    const segments = 180;
-    const length = 1100;
+    const segments = 420;
+    const length = 3200;
     const vertices = [];
     const indices = [];
     for (let i = 0; i <= segments; i++) {
@@ -428,6 +435,54 @@ export class Renderer {
     };
   }
 
+  updateFarTerrain(cameraPosition, force = false) {
+    const snappedX = Math.round(cameraPosition[0] / FAR_TERRAIN_SNAP) * FAR_TERRAIN_SNAP;
+    const snappedZ = Math.round(cameraPosition[2] / FAR_TERRAIN_SNAP) * FAR_TERRAIN_SNAP;
+    if (!force && this.farTerrain && snappedX === this.lastFarTerrainCenter.x && snappedZ === this.lastFarTerrainCenter.z) return;
+
+    this.lastFarTerrainCenter = { x: snappedX, z: snappedZ };
+    this.farTerrain?.vertexBuffer?.destroy?.();
+    this.farTerrain?.indexBuffer?.destroy?.();
+
+    const cells = Math.floor((FAR_TERRAIN_RADIUS * 2) / FAR_TERRAIN_STEP);
+    const vertsPerSide = cells + 1;
+    const vertices = [];
+    const indices = [];
+
+    for (let iz = 0; iz <= cells; iz++) {
+      const z = snappedZ - FAR_TERRAIN_RADIUS + iz * FAR_TERRAIN_STEP;
+      for (let ix = 0; ix <= cells; ix++) {
+        const x = snappedX - FAR_TERRAIN_RADIUS + ix * FAR_TERRAIN_STEP;
+        const y = terrainHeight(x, z) - 0.65;
+        const n = terrainNormal(x, z, FAR_TERRAIN_STEP * 0.35);
+        const mat = terrainMaterial(x, y, z, n[1]);
+        const ao = 0.74 + Math.max(n[1], 0.0) * 0.20;
+        vertices.push(x, y, z, n[0], n[1], n[2], mat, ao);
+      }
+    }
+
+    for (let iz = 0; iz < cells; iz++) {
+      for (let ix = 0; ix < cells; ix++) {
+        const cx = snappedX - FAR_TERRAIN_RADIUS + (ix + 0.5) * FAR_TERRAIN_STEP;
+        const cz = snappedZ - FAR_TERRAIN_RADIUS + (iz + 0.5) * FAR_TERRAIN_STEP;
+        if (Math.hypot(cx - cameraPosition[0], cz - cameraPosition[2]) < FAR_TERRAIN_HOLE_RADIUS) continue;
+        const a = iz * vertsPerSide + ix;
+        const b = a + 1;
+        const c = a + vertsPerSide;
+        const d = c + 1;
+        indices.push(a, b, c, b, d, c);
+      }
+    }
+
+    const vertexArray = new Float32Array(vertices);
+    const indexArray = new Uint32Array(indices);
+    this.farTerrain = {
+      vertexBuffer: createBufferWithData(this.device, vertexArray, GPUBufferUsage.VERTEX, 'far terrain vertices'),
+      indexBuffer: createBufferWithData(this.device, indexArray, GPUBufferUsage.INDEX, 'far terrain indices'),
+      indexCount: indexArray.length,
+    };
+  }
+
   writeUniforms(camera, viewProj, timeSeconds) {
     const sun = new Float32Array([0.42, 0.82, 0.38, 0]);
     const params = new Float32Array([timeSeconds, 0, 0, 0]);
@@ -442,9 +497,11 @@ export class Renderer {
   render(camera, viewProj, timeSeconds) {
     this.resize();
     this.writeUniforms(camera, viewProj, timeSeconds);
+    this.updateFarTerrain(camera.position);
     this.updateWater(camera.position);
 
     let terrainTriangles = 0;
+    let farTerrainTriangles = 0;
     let vegetationInstances = 0;
     let drawCalls = 0;
 
@@ -469,6 +526,14 @@ export class Renderer {
 
     pass.setBindGroup(0, this.uniformBindGroup);
     pass.setPipeline(this.terrainPipeline);
+    if (this.farTerrain) {
+      pass.setVertexBuffer(0, this.farTerrain.vertexBuffer);
+      pass.setIndexBuffer(this.farTerrain.indexBuffer, 'uint32');
+      pass.drawIndexed(this.farTerrain.indexCount);
+      farTerrainTriangles += this.farTerrain.indexCount / 3;
+      drawCalls++;
+    }
+
     for (const chunk of this.chunks.values()) {
       pass.setVertexBuffer(0, chunk.vertexBuffer);
       pass.setIndexBuffer(chunk.indexBuffer, 'uint32');
@@ -497,7 +562,7 @@ export class Renderer {
     pass.end();
     this.device.queue.submit([encoder.finish()]);
 
-    this.stats = { drawCalls, terrainTriangles, vegetationInstances };
+    this.stats = { drawCalls, terrainTriangles, farTerrainTriangles, vegetationInstances };
     return this.stats;
   }
 }

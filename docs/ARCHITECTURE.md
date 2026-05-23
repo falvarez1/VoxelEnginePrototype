@@ -114,6 +114,6 @@ The production version should evolve toward:
 - Meshlet/cluster partitioning.
 - GPU frustum + Hi-Z culling.
 - Indirect draw buffers.
-- Far heightfield clipmaps.
+- Far heightfield clipmaps. The prototype now includes a single camera-centered far heightfield vista mesh as the first step.
 - More advanced material and biome systems.
 - SharedArrayBuffer worker queues when cross-origin isolation is available.
