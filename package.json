@@ -1,0 +1,17 @@
+{
+  "name": "voxel-engine-prototype",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Browser-first WebGPU + WebAssembly voxel terrain prototype with chunk streaming, SDF meshing, vegetation, water, and runtime carving.",
+  "scripts": {
+    "start": "node scripts/serve.mjs",
+    "serve": "node scripts/serve.mjs",
+    "build:wasm": "bash scripts/build-wasm.sh"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {},
+  "devDependencies": {}
+}

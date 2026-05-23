@@ -1,0 +1,46 @@
+html, body {
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  overflow: hidden;
+  background: #0b1117;
+  color: #e9f0f7;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+#gfx {
+  width: 100vw;
+  height: 100vh;
+  display: block;
+}
+#overlay {
+  position: fixed;
+  left: 14px;
+  top: 12px;
+  padding: 12px 14px;
+  background: rgba(4, 8, 12, 0.62);
+  border: 1px solid rgba(255,255,255,0.16);
+  border-radius: 10px;
+  box-shadow: 0 10px 32px rgba(0,0,0,0.25);
+  backdrop-filter: blur(8px);
+  line-height: 1.45;
+  font-size: 12px;
+  pointer-events: none;
+  max-width: 760px;
+}
+#overlay b { color: #ffffff; }
+#overlay span { color: #c7d3df; }
+#overlay.error {
+  white-space: pre-wrap;
+  color: #ffd4d4;
+  background: rgba(80, 20, 20, 0.82);
+}
+#crosshair {
+  position: fixed;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  color: rgba(255,255,255,0.65);
+  font: 20px/20px ui-monospace, monospace;
+  pointer-events: none;
+  text-shadow: 0 1px 3px rgba(0,0,0,0.8);
+}

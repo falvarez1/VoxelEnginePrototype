@@ -1,0 +1,37 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  smoke-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Check JavaScript syntax
+        run: |
+          node --check src/math.js
+          node --check src/terrain_math.js
+          node --check src/renderer.js
+          node --check src/worker.js
+          node --check src/main.js
+          node --check scripts/serve.mjs
+      - name: Check WASM exists
+        run: test -s public/voxel_core.wasm
+      - name: Instantiate WASM and generate one chunk
+        run: |
+          node --input-type=module <<'NODE'
+          import { readFile } from 'node:fs/promises';
+          const bytes = await readFile('./public/voxel_core.wasm');
+          const wasm = await WebAssembly.instantiate(bytes, {});
+          const e = wasm.instance.exports;
+          e.generate_chunk(0, 0, 0, 0);
+          const v = e.get_vertex_count();
+          const i = e.get_index_count();
+          if (v <= 0 || i <= 0) throw new Error(`Expected non-empty chunk, got v=${v}, i=${i}`);
+          console.log({ vertices: v, indices: i });
+          NODE
