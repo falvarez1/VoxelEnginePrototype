@@ -16,6 +16,7 @@ import { WorkerScratchArena } from './worker_scratch.ts';
 type GenerateMessage = Extract<WorkerInboundMessage, { type: 'generate' }>;
 type RemeshDensityMessage = Extract<WorkerInboundMessage, { type: 'remeshDensity' }>;
 type RemeshDensitySharedMessage = Extract<WorkerInboundMessage, { type: 'remeshDensityShared' }>;
+type SharedGenerateMessage = GenerateMessage & { resultSlotIndex: number; resultSlotGeneration: number };
 type GenerateLodTransitionMeshMessage = Extract<WorkerInboundMessage, { type: 'generateLodTransitionMesh' }>;
 
 const BENCHMARK_SCENES = [
@@ -170,7 +171,7 @@ const VEGETATION_SAMPLES_PER_CHUNK = 48;
 const VEGETATION_INSTANCE_FLOATS = 8;
 const SHARED_GENERATE_BATCH_SIZE = 4;
 const SHARED_GENERATE_HEADER_INTS = 4;
-const SHARED_GENERATE_JOB_INTS = 8;
+const SHARED_GENERATE_JOB_INTS = 10;
 const SHARED_GENERATE_STATUS = 0;
 const SHARED_GENERATE_COUNT = 1;
 const SHARED_GENERATE_JOB_BASE = SHARED_GENERATE_HEADER_INTS;
@@ -182,9 +183,12 @@ const SHARED_GENERATE_PRIORITY_MILLIS = 4;
 const SHARED_GENERATE_VERSION = 5;
 const SHARED_GENERATE_EDIT_VERSION = 6;
 const SHARED_GENERATE_LOD_SEAM_MASK = 7;
+const SHARED_GENERATE_RESULT_SLOT = 8;
+const SHARED_GENERATE_RESULT_GENERATION = 9;
 let sharedGenerateQueue: Int32Array | null = null;
 let sharedRemeshDensitySamples: Int16Array | null = null;
 let sharedResultArena: Uint8Array | null = null;
+let sharedResultSlotCount = 0;
 
 function align4(value: number): number {
   return (value + 3) & ~3;
@@ -284,12 +288,12 @@ function generateVegetation(cx: number, cy: number, cz: number): Float32Array {
 
 function keyFromJob(job: GenerateMessage | RemeshDensityMessage): string { return `${job.cx},${job.cy},${job.cz},${job.lod ?? 0}`; }
 
-function readSharedGenerateJobs(): GenerateMessage[] {
+function readSharedGenerateJobs(): SharedGenerateMessage[] {
   if (!sharedGenerateQueue) throw new Error('Shared generate queue is not initialized.');
   const status = Atomics.exchange(sharedGenerateQueue, SHARED_GENERATE_STATUS, 0);
   if (status !== 1) throw new Error(`Shared generate queue had no pending job; status=${status}.`);
   const count = Math.max(1, Math.min(SHARED_GENERATE_BATCH_SIZE, Atomics.load(sharedGenerateQueue, SHARED_GENERATE_COUNT)));
-  const jobs: GenerateMessage[] = [];
+  const jobs: SharedGenerateMessage[] = [];
   for (let index = 0; index < count; index++) {
     const offset = SHARED_GENERATE_JOB_BASE + index * SHARED_GENERATE_JOB_INTS;
     const cx = Atomics.load(sharedGenerateQueue, offset + SHARED_GENERATE_CX);
@@ -307,6 +311,8 @@ function readSharedGenerateJobs(): GenerateMessage[] {
       priority: Atomics.load(sharedGenerateQueue, offset + SHARED_GENERATE_PRIORITY_MILLIS) / 1000,
       version: Atomics.load(sharedGenerateQueue, offset + SHARED_GENERATE_VERSION),
       editVersion: Atomics.load(sharedGenerateQueue, offset + SHARED_GENERATE_EDIT_VERSION),
+      resultSlotIndex: Atomics.load(sharedGenerateQueue, offset + SHARED_GENERATE_RESULT_SLOT),
+      resultSlotGeneration: Atomics.load(sharedGenerateQueue, offset + SHARED_GENERATE_RESULT_GENERATION),
     });
   }
   return jobs;
@@ -620,8 +626,8 @@ function collectChunkResult(
   job: GenerateMessage | RemeshDensityMessage,
   t0: number,
   remeshed: boolean,
-  resultSlotIndex = 0,
-  resultSlotCount = 1,
+  resultSlotIndex = -1,
+  resultSlotCount = 0,
 ): void {
   const vertexCount = e.get_vertex_count();
   const indexCount = e.get_index_count();
@@ -663,7 +669,7 @@ function collectChunkResult(
     ),
   };
   const t1 = performance.now();
-  if (sharedResultArena) {
+  if (sharedResultArena && resultSlotIndex >= 0 && resultSlotCount > 0) {
     const slotCount = Math.max(1, resultSlotCount | 0);
     const slotIndex = Math.max(0, Math.min(slotCount - 1, resultSlotIndex | 0));
     const rawSlotBytes = Math.floor(sharedResultArena.byteLength / slotCount);
@@ -686,6 +692,7 @@ function collectChunkResult(
         .set(new Uint8Array(mem, densityPtr, densityBytes));
       new Uint8Array(sharedResultArena.buffer, arenaBaseOffset + vegetationOffset, vegetationBytes)
         .set(new Uint8Array(vegetation.buffer, vegetation.byteOffset, vegetationBytes));
+      const resultSlotGeneration = (job as Partial<SharedGenerateMessage>).resultSlotGeneration ?? 0;
       workerSelf.postMessage({
         type: 'chunk',
         key: keyFromJob(job),
@@ -712,6 +719,8 @@ function collectChunkResult(
           workerScratch: scratchArena.stats(),
           sharedResultArena: true,
           sharedResultBytes: totalBytes,
+          sharedResultSlotIndex: slotIndex,
+          sharedResultGeneration: resultSlotGeneration,
         },
       });
       return;
@@ -720,6 +729,7 @@ function collectChunkResult(
   const vertices = scratchArena.copyUint8(new Uint8Array(mem, vertexPtr, vertexBytes));
   const indices = scratchArena.copyUint32(new Uint32Array(mem, indexPtr, indexCount));
   const densitySamples = scratchArena.copyInt16(new Int16Array(mem, densityPtr, densityCount));
+  const resultSlotGeneration = (job as Partial<SharedGenerateMessage>).resultSlotGeneration ?? 0;
   workerSelf.postMessage({
     type: 'chunk',
     key: keyFromJob(job),
@@ -744,6 +754,8 @@ function collectChunkResult(
       overflow,
       ms: t1 - t0,
       workerScratch: scratchArena.stats(),
+      sharedResultSlotIndex: resultSlotIndex >= 0 ? resultSlotIndex : undefined,
+      sharedResultGeneration: resultSlotIndex >= 0 ? resultSlotGeneration : undefined,
     },
   }, [vertices.buffer, indices.buffer, densitySamples.buffer, vegetation.buffer] as Transferable[]);
 }
@@ -1063,6 +1075,7 @@ workerSelf.onmessage = async (ev) => {
       sharedRemeshDensitySamples = new Int16Array(msg.densitySamples);
     } else if (msg.type === 'initSharedResultArena') {
       sharedResultArena = new Uint8Array(msg.arena);
+      sharedResultSlotCount = Math.max(0, Math.trunc(msg.slotCount ?? 0));
     } else if (msg.type === 'init') {
       await init();
       workerSelf.postMessage({ type: 'ready' });
@@ -1071,7 +1084,7 @@ workerSelf.onmessage = async (ev) => {
     } else if (msg.type === 'generateShared') {
       const jobs = readSharedGenerateJobs();
       for (let index = 0; index < jobs.length; index++) {
-        await generate(jobs[index], index, jobs.length);
+        await generate(jobs[index], jobs[index].resultSlotIndex, sharedResultSlotCount);
       }
     } else if (msg.type === 'remeshDensity') {
       await remeshDensity(msg);

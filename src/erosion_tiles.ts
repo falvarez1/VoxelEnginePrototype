@@ -376,7 +376,7 @@ export class ErosionTileCache {
     let touched = 0;
     for (let dz = -radius; dz <= radius; dz++) {
       for (let dx = -radius; dx <= radius; dx++) {
-        this.getTile(tileX + dx, tileZ + dz, {
+        this.prefetchTile(tileX + dx, tileZ + dz, {
           reason: 'prefetch',
           priority: EROSION_TILE_PREFETCH_PRIORITY + dx * dx + dz * dz,
         });
@@ -387,6 +387,20 @@ export class ErosionTileCache {
     this.dropStalePrefetchRequests(tileX, tileZ, radius + 1);
     this.prefetchTiles += touched;
     return touched;
+  }
+
+  private prefetchTile(tileX: number, tileZ: number, request: ErosionTileRequestOptions): void {
+    const key = tileKey(tileX, tileZ);
+    const existing = this.tiles.get(key);
+    if (existing) {
+      if (existing.source === 'typescript') {
+        this.requestPersistedTile(tileX, tileZ, key);
+        this.requestWorkerTile(tileX, tileZ, key, request);
+      }
+      return;
+    }
+    this.requestPersistedTile(tileX, tileZ, key);
+    this.requestWorkerTile(tileX, tileZ, key, request);
   }
 
   stats(): ErosionTileStats {

@@ -39,6 +39,8 @@ export interface ChunkMeshStats {
   workerScratch?: WorkerScratchStats;
   sharedResultArena?: boolean;
   sharedResultBytes?: number;
+  sharedResultSlotIndex?: number;
+  sharedResultGeneration?: number;
 }
 
 export interface WorkerScratchStats {
@@ -211,7 +213,7 @@ export type WorkerInboundMessage =
   | { type: 'init' }
   | { type: 'initSharedQueue'; queue: SharedArrayBuffer }
   | { type: 'initSharedRemeshPage'; densitySamples: SharedArrayBuffer }
-  | { type: 'initSharedResultArena'; arena: SharedArrayBuffer }
+  | { type: 'initSharedResultArena'; arena: SharedArrayBuffer; slotCount?: number }
   | { type: 'generateShared' }
   | ({ type: 'generate' } & ChunkJob)
   | ({ type: 'remeshDensity' } & ChunkJob & { densitySamples: Int16Array; editsToApply: EditOperation[] })
@@ -417,6 +419,8 @@ export interface StreamerStats {
   sharedResultChunks: number;
   sharedResultBytes: number;
   sharedResultCacheCopyBytes: number;
+  sharedResultCacheBorrowedChunks: number;
+  sharedResultCacheBorrowedBytes: number;
   savedRegionChunks: number;
   loadedRegionChunks: number;
   exportedRegionChunks: number;

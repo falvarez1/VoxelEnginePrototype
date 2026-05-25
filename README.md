@@ -29,7 +29,7 @@ The app now uses Vite for the browser development/build path, includes a prebuil
 - Quantized `i16` density samples exported from WASM and carried with chunk cache entries.
 - Shared typed-array pool for restored/imported chunk payloads, with reuse telemetry in the runtime overlay.
 - Worker-side scratch arena telemetry for reusable temporary buffers plus transferable/shared-result output pressure.
-- SharedArrayBuffer per-worker batched generate job pages, cached-density remesh payload pages, and reusable result arenas when cross-origin isolation is available; workers process multiple generated chunks per wake, write chunk results into non-overlapping shared result slots for batched jobs, renderer upload consumes those shared result views directly, and only long-lived cache payloads are copied out before worker slot reuse.
+- SharedArrayBuffer per-worker batched generate job pages, cached-density remesh payload pages, and reusable result arenas when cross-origin isolation is available; workers process multiple generated chunks per wake, write chunk results into non-overlapping shared result slots for batched jobs, renderer upload consumes those shared result views directly, and cache entries can pin slot-backed mesh/density/vegetation views until cache eviction releases the slot. Oversized payloads, exhausted slots, and failed cache inserts fall back to transfer or owned copies.
 - Compressed region payloads for IndexedDB slots and portable `.scvr` files: delta-varint density plus byte-LZSS packed vertices, indices, and vegetation where smaller, with legacy raw imports still accepted.
 - Region persistence telemetry in the overlay, including saved slot chunk/edit metadata and raw-vs-encoded compression ratios.
 - Active-vs-saved region diff telemetry for the selected slot, including chunk coverage, changed cached payloads, signature-aware edit-log differences, sampled active-only/saved-only/changed operations, and edit-branch differences.
@@ -113,6 +113,8 @@ To run a deterministic movement probe without keyboard input, use `test.move` wi
 ```text
 http://localhost:5173?test.move=d&test.moveDelayMs=9000&test.moveMs=7000&set.cameraSpeed=420
 ```
+
+Add `test.frameProbe=1` to expose per-frame section timings on `window.__stormCanyonFrameProbe` for movement-stutter investigations.
 
 To automate a browser validation run without clicking the UI, use `set.<EngineSettingsKey>` overrides, optional `camera=x,y,z,yaw,pitch,fov`, and `auto` actions. This example hides the UI panels, waits 30 frames, emits runtime state to the console and backend, and writes the latest report to `output/automation/latest.json`:
 
@@ -299,7 +301,7 @@ Continue the core engine roadmap with:
 3. Move vegetation/scenery culling deeper onto the GPU and add richer impostor/LOD systems on top of the current patch culling, instance distance LOD, and single frame batch draw.
 4. Expand the current runtime worldgen tile cache, IndexedDB-backed native worldgen/erosion/material/cave tile persistence, prioritized worker-backed native tile adoption, macro climate fields, heuristic drainage/flow metadata, vegetation suitability, biome-blend/material weights, native material-field tile buffers, deterministic branch/chamber cave SDF, and worker-adopted native cave graph tile buffers into production worldgen, erosion, material, and cave graph tiles with river-network simulation, hydraulic/thermal erosion simulation, production material-field ownership, production scheduling, streaming ownership, broader region/world invalidation ownership, serialized cave graph ownership, and biome/material-blending data.
 5. Expand the current region browser policy, payload-comparison, and decode/hash verification workflow into richer saved-region investigations, plus stronger brush/editor tooling on top of the sphere/box/capsule brush operations, carve/build falloff, smooth mode, flatten/path mode, material paint mode, and configurable placement distance.
-6. Broaden the SharedArrayBuffer path from current zero-copy renderer result consumption into clearer zero-copy cache ownership, and tune upload-ring page sizing from browser traces.
+6. Tune shared-result slot sizing, remesh payload ownership, and upload-ring page sizing from browser traces now that generated chunk results can flow worker -> renderer/cache with explicit slot lifetime ownership.
 7. Port the stable C core to Rust/WASM once the browser-facing architecture stabilizes.
 
 After the core engine roadmap is complete, continue the graphics track in `docs/plans/visual-quality-pipeline-plan.md` for deeper material, water, vegetation, cave-surface, shadow, and visual-regression work. The current renderer-only visual slice is intentionally aligned with that plan but does not complete it; the supplied cinematic alpine reference still requires the follow-on graphics work after the remaining meshing, culling, worldgen, Rust-core, and editor/game foundations.

@@ -63,7 +63,7 @@ Implemented:
 - Quantized `i16` density samples exported by WASM and stored with chunk cache entries.
 - Shared typed-array pool for restored/imported chunk payloads, with overlay reuse telemetry.
 - Worker-local scratch arena telemetry for reusable temporary staging and transferable/shared-result output allocation pressure.
-- SharedArrayBuffer per-worker batched generate job pages, cached-density remesh payload pages, and result arenas when cross-origin isolation is available, with overlay page/job/batch/result-copy telemetry and transferable fallback for oversized results.
+- SharedArrayBuffer per-worker batched generate job pages, cached-density remesh payload pages, and result arenas when cross-origin isolation is available, with overlay page/job/batch/cache-borrow/copy-fallback telemetry and transferable fallback for oversized results.
 - WASM `mesh_cached_chunk` path for polygonizing an existing quantized density buffer.
 - Streamer edit rebuilds can remesh dirty chunks from cached density when samples are available.
 - IndexedDB multi-region slot persistence for edit logs and cached chunk density/render payloads.
@@ -82,10 +82,10 @@ Implemented:
 
 ## Phase 2 — Better terrain chunks
 
-- Extend the current typed-array pool, worker scratch telemetry, and shared result arenas into larger region-browser workflows and stronger cache lifetime ownership.
+- Extend the current typed-array pool, worker scratch telemetry, and explicit shared-result cache ownership into larger region-browser workflows and stronger remesh/input lifetime ownership.
 - Expand the current named retention policy, dry-run, maintenance-history, report-export, searchable payload-inspection, saved-vs-saved payload-comparison, and decode/hash verification workflow into stronger saved-region investigations and cache-lifetime ownership.
 - Extend the browser-driven visual capture workflow beyond compact PNG metrics/signatures and current HTML review artifacts into richer full-resolution perceptual comparison. Status: the visual baseline now stores compressed full-resolution luma fields, compare mode reports full-resolution luma delta, changed-pixel fraction, global SSIM, block-SSIM tail statistics, and writes full-resolution luma diff heatmaps.
-- Broaden the current batched SharedArrayBuffer generate queue, remesh pages, and result slots toward zero-copy cache lifetime ownership once renderer/cache aliasing rules are explicit.
+- Tune the current batched SharedArrayBuffer generate queue, remesh pages, and explicit cache-borrowed result slots toward lower slot pressure, fewer remesh copies, and clearer eviction telemetry.
 
 ## Phase 3 — Production meshing
 

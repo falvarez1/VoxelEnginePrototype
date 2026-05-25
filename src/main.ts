@@ -15,10 +15,18 @@ import { createPayloadCompressionStats, type PayloadCompressionStats } from './c
 import { StormCanyonGame, type GameSnapshot } from './game.ts';
 import {
   biomeMask,
+  caveDistance,
+  drainageMask,
+  erosionMask,
+  macroContinent,
+  macroMoisture,
+  macroTemperature,
+  riverCenter,
   terrainHeight,
   terrainMaterial,
   terrainNormal,
   snowMask,
+  vegetationMask,
   wetnessMask,
 } from './terrain_math.ts';
 import { WorldgenTileCache, type SerializedWorldgenTile, type WorldgenBiomeWeights, type WorldgenMaterialWeights, type WorldgenTileStats } from './worldgen_tiles.ts';
@@ -105,6 +113,13 @@ type SharedRemeshPage = {
 type SharedResultArena = {
   buffer: SharedArrayBuffer;
   bytes: Uint8Array;
+  slots: SharedResultSlot[];
+};
+type SharedResultSlot = {
+  index: number;
+  generation: number;
+  state: 'free' | 'pending' | 'cached';
+  key?: string;
 };
 type ChunkWorker = Worker & {
   currentJobs?: ChunkJob[];
@@ -128,6 +143,9 @@ interface ChunkCachePayload {
   densitySamples: Int16Array;
   vegetation: Float32Array;
   copiedBytes: number;
+  borrowedBytes: number;
+  ownsArrays: boolean;
+  onRelease?: () => void;
 }
 
 interface PendingChunkResult {
@@ -427,6 +445,17 @@ interface MovementTestConfig {
   durationMs: number;
 }
 
+interface FrameProbeSample {
+  t: number;
+  total: number;
+  sections: Record<string, number>;
+}
+
+interface FrameProbeState {
+  samples: FrameProbeSample[];
+  maxBySection: Record<string, number>;
+}
+
 interface BrushOptions {
   radius: number;
   distance: number;
@@ -490,6 +519,9 @@ const DEBUG_VIEW_SNOW_MASK = 10;
 const DENSITY_AXIS_X = 0;
 const DENSITY_AXIS_Y = 1;
 const DENSITY_AXIS_Z = 2;
+const DIAGNOSTIC_UI_UPDATE_INTERVAL_MS = 250;
+const DIAGNOSTIC_CAMERA_MOVE_EPSILON = 0.025;
+const DIAGNOSTIC_CAMERA_MOVING_SECONDS = 0.45;
 const QUALITY_PRESET_LOW = 0;
 const QUALITY_PRESET_BALANCED = 1;
 const QUALITY_PRESET_HIGH = 2;
@@ -528,9 +560,13 @@ const REGION_RETENTION_POLICIES: RegionRetentionPolicy[] = [
 ];
 const MAX_CHUNK_RESULT_ADOPTIONS_PER_FRAME = 2;
 const MAX_CHUNK_RESULT_ADOPTION_MS_PER_FRAME = 4.0;
+const MAX_MOVING_CHUNK_RESULT_ADOPTIONS_PER_FRAME = 1;
+const MAX_MOVING_CHUNK_RESULT_ADOPTION_MS_PER_FRAME = 1.5;
+const STREAMING_CAMERA_MOVE_EPSILON = 0.025;
+const STREAMING_CAMERA_MOVING_SECONDS = 0.22;
 const SHARED_GENERATE_BATCH_SIZE = 4;
 const SHARED_GENERATE_HEADER_INTS = 4;
-const SHARED_GENERATE_JOB_INTS = 8;
+const SHARED_GENERATE_JOB_INTS = 10;
 const SHARED_GENERATE_QUEUE_INTS = SHARED_GENERATE_HEADER_INTS + SHARED_GENERATE_BATCH_SIZE * SHARED_GENERATE_JOB_INTS;
 const SHARED_GENERATE_STATUS = 0;
 const SHARED_GENERATE_COUNT = 1;
@@ -544,7 +580,10 @@ const SHARED_GENERATE_PRIORITY_MILLIS = 4;
 const SHARED_GENERATE_VERSION = 5;
 const SHARED_GENERATE_EDIT_VERSION = 6;
 const SHARED_GENERATE_LOD_SEAM_MASK = 7;
+const SHARED_GENERATE_RESULT_SLOT = 8;
+const SHARED_GENERATE_RESULT_GENERATION = 9;
 const SHARED_RESULT_ARENA_BYTES = 12 * 1024 * 1024;
+const SHARED_RESULT_SLOT_COUNT = 64;
 const LOD_TRANSITION_MESH_KEY = '__runtime_lod_transition_mesh__';
 
 function chunkCoord(v: number): number { return Math.floor(v / CHUNK_WORLD_SIZE); }
@@ -1303,6 +1342,8 @@ function cachePayloadForChunkMessage(msg: ChunkMessage): ChunkCachePayload {
       densitySamples: msg.densitySamples,
       vegetation: msg.vegetation,
       copiedBytes: 0,
+      borrowedBytes: 0,
+      ownsArrays: true,
     };
   }
   const vertices = new Uint8Array(msg.vertices);
@@ -1315,6 +1356,8 @@ function cachePayloadForChunkMessage(msg: ChunkMessage): ChunkCachePayload {
     densitySamples,
     vegetation,
     copiedBytes: vertices.byteLength + indices.byteLength + densitySamples.byteLength + vegetation.byteLength,
+    borrowedBytes: 0,
+    ownsArrays: true,
   };
 }
 
@@ -1677,10 +1720,111 @@ function sampleWorldgenProbe(position: Vec3, label: string): WorldgenProbe {
   };
 }
 
+function proceduralWorldgenProbe(position: Vec3, label: string): WorldgenProbe {
+  const x = position[0];
+  const y = position[1];
+  const z = position[2];
+  const height = terrainHeight(x, z);
+  const normal = terrainNormal(x, z);
+  const normalY = normal[1];
+  const river = riverCenter(z);
+  const wetness = wetnessMask(x, height, z, normalY, height);
+  const snow = snowMask(x, height, z, normalY, height);
+  const biome = biomeMask(x, z, height, normalY);
+  const drainage = drainageMask(x, z);
+  const erosion = erosionMask(x, z);
+  const vegetation = vegetationMask(x, height, z, normalY);
+  const cave = caveDistance(x, y, z);
+  const material = terrainMaterial(x, height, z, normalY);
+  const biomeWeights: WorldgenBiomeWeights = {
+    meadow: Math.max(0, 1 - biome),
+    riverValley: Math.max(0, 1 - Math.min(Math.abs(x - river) / 96, 1)),
+    alpineSnow: snow,
+    exposedRidge: Math.max(0, 1 - normalY),
+    forestEdge: vegetation,
+    drySlope: Math.max(0, 1 - wetness),
+  };
+  const materialWeights: WorldgenMaterialWeights = {
+    grass: material === 0 ? 1 : 0,
+    rock: material === 1 ? 1 : 0,
+    snow: material === 2 ? 1 : 0,
+    mud: material === 3 ? 1 : 0,
+  };
+  const materialField: MaterialTileSample = {
+    tileX: Math.floor(x / 256),
+    tileZ: Math.floor(z / 256),
+    weights: materialWeights,
+    dominantMaterialId: material,
+    dominantMaterialName: material === 1 ? 'rock' : material === 2 ? 'snow' : material === 3 ? 'mud' : 'grass',
+    wetness,
+    roughness: Math.max(0.2, 1 - normalY),
+    fertility: vegetation,
+    stability: Math.max(0, Math.min(1, normalY + 0.15)),
+    shoreline: Math.max(0, 1 - Math.min(Math.abs(x - river) / 48, 1)),
+    caveSurface: Math.max(0, 1 - Math.min(Math.abs(cave) / 16, 1)),
+    routeCost: Math.max(0, Math.min(1, (1 - normalY) * 0.8 + Math.max(0, height - y) * 0.01)),
+    blendConfidence: 0.75,
+  };
+  return {
+    label,
+    x,
+    y,
+    z,
+    height,
+    riverCenter: river,
+    riverDistance: Math.abs(x - river),
+    normalY,
+    continent: macroContinent(x, z),
+    moisture: macroMoisture(x, z),
+    temperature: macroTemperature(x, z),
+    drainage,
+    erosion,
+    vegetation,
+    biome,
+    wetness,
+    snow,
+    caveDistance: cave,
+    surfaceCaveDistance: cave,
+    caveInfluence: Math.max(0, 1 - Math.min(Math.abs(cave) / 32, 1)),
+    material,
+    biomeId: 0,
+    waterId: Math.abs(x - river) < 14 ? 1 : 0,
+    riverNetworkId: 0,
+    flowX: 0,
+    flowZ: 1,
+    flowAccumulation: drainage,
+    drainageBasinId: 0,
+    streamOrder: Math.max(0, Math.round(drainage * 4)),
+    channelWidth: Math.max(0, 8 + drainage * 28),
+    streamPower: drainage,
+    erosionTile: {
+      thermal: erosion,
+      hydraulic: drainage,
+      deposition: Math.max(0, wetness - erosion * 0.4),
+      sediment: drainage * wetness,
+      bedrock: Math.max(0, 1 - normalY),
+      soil: Math.max(0, vegetation * (1 - snow)),
+      retention: vegetation,
+    },
+    materialField,
+    biomeWeights,
+    materialWeights,
+    tileX: Math.floor(x / 256),
+    tileZ: Math.floor(z / 256),
+    caveGraphTileKey: `${Math.floor(x / 256)},${Math.floor(z / 256)}`,
+    caveGraphPassageId: null,
+    caveGraphPassageKind: null,
+    caveGraphPassageDistance: cave,
+    caveGraphChamberId: null,
+    caveGraphChamberDistance: cave,
+    caveGraphBiomeHook: null,
+  };
+}
+
 function worldgenSnapshot(camera: FlyCamera, settings: EngineSettings): WorldgenSnapshot {
   const brushTarget = add(camera.position, scale(camera.forward(), settings.brushDistance));
-  const brush = sampleWorldgenProbe(brushTarget, 'brush');
-  const cameraProbe = sampleWorldgenProbe(camera.position, 'camera');
+  const brush = proceduralWorldgenProbe(brushTarget, 'brush');
+  const cameraProbe = proceduralWorldgenProbe(camera.position, 'camera');
   return {
     camera: cameraProbe,
     brush,
@@ -1775,7 +1919,7 @@ function brushCoreExtent(options: BrushOptions): number {
 
 function createBrushInspectorState(camera: FlyCamera, settings: EngineSettings, brush: BrushOptions): BrushInspectorPanelState {
   const target = add(camera.position, scale(brush.direction, brush.distance));
-  const probe = sampleWorldgenProbe(target, 'brush');
+  const probe = proceduralWorldgenProbe(target, 'brush');
   const influenceRadius = Math.max(0.001, brushInfluenceRadius(brush));
   const coreExtent = brushCoreExtent(brush);
   const falloff = brush.type === 'subtractSphere' || brush.type === 'addSphere'
@@ -2501,6 +2645,11 @@ class ChunkStreamer {
   baseStreamRadius = DEFAULT_STREAM_RADIUS;
   effectiveStreamRadius = DEFAULT_STREAM_RADIUS;
   currentTargetChunks = 0;
+  requiredPlanSignature = '';
+  requiredPlan: ChunkRequest[] = [];
+  requiredPlanKeys = new Set<string>();
+  lastStreamingCameraPosition = { x: Infinity, y: Infinity, z: Infinity };
+  lastStreamingCameraMoveTime = 0;
   lastLodPlanSummary: TerrainLodPlanSummary = {
     targetChunks: 0,
     lod0Chunks: 0,
@@ -2550,6 +2699,8 @@ class ChunkStreamer {
       sharedResultChunks: 0,
       sharedResultBytes: 0,
       sharedResultCacheCopyBytes: 0,
+      sharedResultCacheBorrowedChunks: 0,
+      sharedResultCacheBorrowedBytes: 0,
       savedRegionChunks: 0,
       loadedRegionChunks: 0,
       exportedRegionChunks: 0,
@@ -2620,8 +2771,16 @@ class ChunkStreamer {
         worker.sharedRemeshPage = { buffer: remeshBuffer, densitySamples: new Int16Array(remeshBuffer) };
         worker.postMessage({ type: 'initSharedRemeshPage', densitySamples: remeshBuffer });
         const resultBuffer = new SharedArrayBuffer(SHARED_RESULT_ARENA_BYTES);
-        worker.sharedResultArena = { buffer: resultBuffer, bytes: new Uint8Array(resultBuffer) };
-        worker.postMessage({ type: 'initSharedResultArena', arena: resultBuffer });
+        worker.sharedResultArena = {
+          buffer: resultBuffer,
+          bytes: new Uint8Array(resultBuffer),
+          slots: Array.from({ length: SHARED_RESULT_SLOT_COUNT }, (_, index) => ({
+            index,
+            generation: 0,
+            state: 'free',
+          })),
+        };
+        worker.postMessage({ type: 'initSharedResultArena', arena: resultBuffer, slotCount: SHARED_RESULT_SLOT_COUNT });
       }
       worker.postMessage({ type: 'init' });
     }
@@ -3117,6 +3276,29 @@ class ChunkStreamer {
     return clampInt(this.baseStreamRadius + altitudeBoost, MIN_STREAM_RADIUS, MAX_STREAM_RADIUS);
   }
 
+  private updateStreamingCameraMotion(camera: FlyCamera): boolean {
+    const previous = this.lastStreamingCameraPosition;
+    const now = performance.now();
+    if (
+      Number.isFinite(previous.x)
+      && Number.isFinite(previous.y)
+      && Number.isFinite(previous.z)
+      && Math.hypot(
+        camera.position[0] - previous.x,
+        camera.position[1] - previous.y,
+        camera.position[2] - previous.z,
+      ) > STREAMING_CAMERA_MOVE_EPSILON
+    ) {
+      this.lastStreamingCameraMoveTime = now;
+    }
+    this.lastStreamingCameraPosition = {
+      x: camera.position[0],
+      y: camera.position[1],
+      z: camera.position[2],
+    };
+    return now - this.lastStreamingCameraMoveTime < STREAMING_CAMERA_MOVING_SECONDS * 1000;
+  }
+
   private viewFocusStreamAnchor(camera: FlyCamera, radius: number): { cx: number; cz: number; radius: number } | null {
     if (camera.position[1] < VIEW_FOCUS_STREAM_MIN_ALTITUDE) return null;
     const forward = camera.forward();
@@ -3178,6 +3360,14 @@ class ChunkStreamer {
     const cz0 = chunkCoord(camera.position[2]);
     const radius = this.streamRadiusForCamera(camera);
     this.effectiveStreamRadius = radius;
+    const focus = this.viewFocusStreamAnchor(camera, radius);
+    const focusSignature = focus ? `${focus.cx},${focus.cz},${focus.radius}` : 'none';
+    const signature = `${cx0},${cz0},${radius},${this.terrainLodEnabled ? 1 : 0},${focusSignature}`;
+    if (signature === this.requiredPlanSignature) {
+      this.currentTargetChunks = this.requiredPlan.length;
+      return this.requiredPlan;
+    }
+
     const primaryKeys = planTerrainLodRequests({
       cameraChunkX: cx0,
       cameraChunkZ: cz0,
@@ -3189,7 +3379,6 @@ class ChunkStreamer {
     const byKey = new Map<string, typeof primaryKeys[number]>();
     for (const item of primaryKeys) byKey.set(item.key, item);
 
-    const focus = this.viewFocusStreamAnchor(camera, radius);
     if (focus) {
       const focusKeys = planTerrainLodRequests({
         cameraChunkX: focus.cx,
@@ -3208,11 +3397,21 @@ class ChunkStreamer {
     const keys = [...byKey.values()].sort((a, b) => a.priority - b.priority);
     this.lastLodPlanSummary = summarizeTerrainLodPlan(keys);
     this.currentTargetChunks = keys.length;
+    this.requiredPlanSignature = signature;
+    this.requiredPlan = keys;
+    this.requiredPlanKeys = new Set(keys.map(item => item.key));
     return keys;
   }
 
   update(camera: FlyCamera): void {
-    let adoptedThisFrame = this.processPendingChunkResults();
+    const cameraMoving = this.updateStreamingCameraMotion(camera);
+    const maxAdoptions = cameraMoving
+      ? MAX_MOVING_CHUNK_RESULT_ADOPTIONS_PER_FRAME
+      : MAX_CHUNK_RESULT_ADOPTIONS_PER_FRAME;
+    const adoptionBudgetMs = cameraMoving
+      ? MAX_MOVING_CHUNK_RESULT_ADOPTION_MS_PER_FRAME
+      : MAX_CHUNK_RESULT_ADOPTION_MS_PER_FRAME;
+    let adoptedThisFrame = this.processPendingChunkResults(maxAdoptions, adoptionBudgetMs);
     if (!this.streamingEnabled) {
       this.effectiveStreamRadius = this.streamRadiusForCamera(camera);
       this.currentTargetChunks = 0;
@@ -3220,7 +3419,7 @@ class ChunkStreamer {
     }
 
     const required = this.requiredKeysForCamera(camera);
-    const requiredKeys = new Set(required.map(item => item.key));
+    const requiredKeys = this.requiredPlanKeys;
     let enqueuedThisFrame = 0;
     for (const item of required) {
       const state = this.states.get(item.key);
@@ -3237,7 +3436,7 @@ class ChunkStreamer {
         }
       }
       if (!state && this.queue.length < MAX_QUEUE && enqueuedThisFrame < MAX_NEW_CHUNK_REQUESTS_PER_FRAME) {
-        const canAdoptCachedChunk = adoptedThisFrame < MAX_CHUNK_RESULT_ADOPTIONS_PER_FRAME;
+        const canAdoptCachedChunk = adoptedThisFrame < maxAdoptions;
         const cachedCandidate = this.cache.peek(item.key);
         if (cachedCandidate) {
           if (!canAdoptCachedChunk) continue;
@@ -3345,6 +3544,35 @@ class ChunkStreamer {
     return worldgenDispatched + erosionDispatched + materialDispatched + caveGraphDispatched;
   }
 
+  private allocateSharedResultSlot(worker: ChunkWorker, key: string): SharedResultSlot | null {
+    const arena = worker.sharedResultArena;
+    if (!arena) return null;
+    const slot = arena.slots.find(candidate => candidate.state === 'free');
+    if (!slot) return null;
+    slot.state = 'pending';
+    slot.key = key;
+    slot.generation++;
+    return slot;
+  }
+
+  private releaseSharedResultSlot(worker: ChunkWorker, slotIndex: number | undefined, generation: number | undefined): void {
+    if (!Number.isInteger(slotIndex) || !Number.isInteger(generation)) return;
+    const slot = worker.sharedResultArena?.slots[slotIndex as number];
+    if (!slot || slot.generation !== generation) return;
+    slot.state = 'free';
+    slot.key = undefined;
+  }
+
+  private releasePendingSharedResultSlots(worker: ChunkWorker): void {
+    const arena = worker.sharedResultArena;
+    if (!arena) return;
+    for (const slot of arena.slots) {
+      if (slot.state !== 'pending') continue;
+      slot.state = 'free';
+      slot.key = undefined;
+    }
+  }
+
   private dispatchSharedGenerate(worker: ChunkWorker, jobs: ChunkJob[]): void {
     const queue = worker.sharedGenerateQueue;
     if (!queue) {
@@ -3352,12 +3580,13 @@ class ChunkStreamer {
       return;
     }
     const count = Math.min(jobs.length, SHARED_GENERATE_BATCH_SIZE);
+    const resultSlots = jobs.slice(0, count).map(job => this.allocateSharedResultSlot(worker, job.key));
     queue.sequence++;
     Atomics.store(queue.ints, SHARED_GENERATE_STATUS, 0);
     Atomics.store(queue.ints, SHARED_GENERATE_COUNT, count);
     Atomics.store(queue.ints, SHARED_GENERATE_SEQUENCE, queue.sequence);
     for (let index = 0; index < count; index++) {
-      this.writeSharedGenerateJob(queue.ints, index, jobs[index]);
+      this.writeSharedGenerateJob(queue.ints, index, jobs[index], resultSlots[index]);
     }
     Atomics.store(queue.ints, SHARED_GENERATE_STATUS, 1);
     this.lastStats.sharedQueueDispatches += count;
@@ -3366,7 +3595,7 @@ class ChunkStreamer {
     worker.postMessage({ type: 'generateShared' });
   }
 
-  private writeSharedGenerateJob(ints: Int32Array, index: number, job: ChunkJob): void {
+  private writeSharedGenerateJob(ints: Int32Array, index: number, job: ChunkJob, resultSlot: SharedResultSlot | null): void {
     const offset = SHARED_GENERATE_JOB_BASE + index * SHARED_GENERATE_JOB_INTS;
     Atomics.store(ints, offset + SHARED_GENERATE_CX, job.cx);
     Atomics.store(ints, offset + SHARED_GENERATE_CY, job.cy);
@@ -3376,6 +3605,8 @@ class ChunkStreamer {
     Atomics.store(ints, offset + SHARED_GENERATE_VERSION, job.version);
     Atomics.store(ints, offset + SHARED_GENERATE_EDIT_VERSION, job.editVersion);
     Atomics.store(ints, offset + SHARED_GENERATE_LOD_SEAM_MASK, job.lodSeamMask ?? 0);
+    Atomics.store(ints, offset + SHARED_GENERATE_RESULT_SLOT, resultSlot?.index ?? -1);
+    Atomics.store(ints, offset + SHARED_GENERATE_RESULT_GENERATION, resultSlot?.generation ?? 0);
   }
 
   private dispatchSharedRemesh(worker: ChunkWorker, job: ChunkJob): void {
@@ -3434,6 +3665,7 @@ class ChunkStreamer {
       for (const job of worker.currentJobs ?? []) {
         if (this.states.get(job.key) === 'pending') this.states.delete(job.key);
       }
+      this.releasePendingSharedResultSlots(worker);
       worker.currentJobs = [];
       worker.pendingJobsRemaining = 0;
       this.idle.push(worker);
@@ -3465,12 +3697,12 @@ class ChunkStreamer {
     this.pendingChunkResults.push({ worker, msg });
   }
 
-  private processPendingChunkResults(): number {
+  private processPendingChunkResults(maxAdoptions: number, maxMs: number): number {
     let adopted = 0;
     const started = performance.now();
     while (this.pendingChunkResults.length > 0) {
-      if (adopted >= MAX_CHUNK_RESULT_ADOPTIONS_PER_FRAME) break;
-      if (adopted > 0 && performance.now() - started >= MAX_CHUNK_RESULT_ADOPTION_MS_PER_FRAME) break;
+      if (adopted >= maxAdoptions) break;
+      if (adopted > 0 && performance.now() - started >= maxMs) break;
       const result = this.pendingChunkResults.shift();
       if (!result) break;
       this.completeChunkResult(result.worker, result.msg);
@@ -3479,10 +3711,45 @@ class ChunkStreamer {
     return adopted;
   }
 
+  private sharedResultSlotToken(msg: ChunkMessage): { slotIndex: number; generation: number } | null {
+    const slotIndex = msg.stats?.sharedResultSlotIndex;
+    const generation = msg.stats?.sharedResultGeneration;
+    if (!Number.isInteger(slotIndex) || !Number.isInteger(generation)) return null;
+    return { slotIndex: slotIndex as number, generation: generation as number };
+  }
+
+  private borrowedCachePayloadForChunkMessage(worker: ChunkWorker, msg: ChunkMessage): ChunkCachePayload | null {
+    if (msg.stats?.sharedResultArena !== true) return null;
+    const token = this.sharedResultSlotToken(msg);
+    if (!token) return null;
+    const slot = worker.sharedResultArena?.slots[token.slotIndex];
+    if (!slot || slot.generation !== token.generation || slot.state !== 'pending' || slot.key !== msg.key) return null;
+    const borrowedBytes = msg.vertices.byteLength + msg.indices.byteLength + msg.densitySamples.byteLength + msg.vegetation.byteLength;
+    let released = false;
+    const onRelease = (): void => {
+      if (released) return;
+      released = true;
+      this.releaseSharedResultSlot(worker, token.slotIndex, token.generation);
+    };
+    slot.state = 'cached';
+    return {
+      vertices: msg.vertices,
+      indices: msg.indices,
+      densitySamples: msg.densitySamples,
+      vegetation: msg.vegetation,
+      copiedBytes: 0,
+      borrowedBytes,
+      ownsArrays: false,
+      onRelease,
+    };
+  }
+
   private completeChunkResult(worker: ChunkWorker, msg: ChunkMessage): void {
     if (msg.version !== this.version) {
       this.states.delete(msg.key);
       this.lastStats.discarded++;
+      const token = this.sharedResultSlotToken(msg);
+      if (token) this.releaseSharedResultSlot(worker, token.slotIndex, token.generation);
       this.completeWorkerJob(worker, msg.key);
       return;
     }
@@ -3506,9 +3773,10 @@ class ChunkStreamer {
 
     this.renderer.createChunkMesh(msg.key, msg.vertices, msg.indices, msg.frame, msg.bounds, msg.stats);
     if (msg.vegetation && msg.vegetation.length > 0) this.renderer.createVegetationPatch(msg.key, msg.vegetation);
-    const cachePayload = cachePayloadForChunkMessage(msg);
+    const borrowedCachePayload = this.borrowedCachePayloadForChunkMessage(worker, msg);
+    const cachePayload = borrowedCachePayload ?? cachePayloadForChunkMessage(msg);
     if (cachePayload.copiedBytes > 0) this.lastStats.sharedResultCacheCopyBytes += cachePayload.copiedBytes;
-    this.cache.put(
+    const cached = this.cache.put(
       msg.key,
       msg.cx,
       msg.cy,
@@ -3521,7 +3789,37 @@ class ChunkStreamer {
       msg.frame,
       msg.bounds,
       msg.stats,
+      {
+        ownsArrays: cachePayload.ownsArrays,
+        onRelease: cachePayload.onRelease,
+      },
     );
+    if (cached && cachePayload.borrowedBytes > 0) {
+      this.lastStats.sharedResultCacheBorrowedChunks++;
+      this.lastStats.sharedResultCacheBorrowedBytes += cachePayload.borrowedBytes;
+    }
+    if (!cached && borrowedCachePayload) {
+      const copiedPayload = cachePayloadForChunkMessage(msg);
+      this.lastStats.sharedResultCacheCopyBytes += copiedPayload.copiedBytes;
+      this.cache.put(
+        msg.key,
+        msg.cx,
+        msg.cy,
+        msg.cz,
+        msg.lod,
+        copiedPayload.vertices,
+        copiedPayload.indices,
+        copiedPayload.densitySamples,
+        copiedPayload.vegetation,
+        msg.frame,
+        msg.bounds,
+        msg.stats,
+      );
+    }
+    if (!borrowedCachePayload) {
+      const token = this.sharedResultSlotToken(msg);
+      if (token) this.releaseSharedResultSlot(worker, token.slotIndex, token.generation);
+    }
     this.refreshCacheStats();
     this.states.set(msg.key, 'loaded');
     this.completeWorkerJob(worker, msg.key);
@@ -4921,7 +5219,7 @@ function updateOverlay(
     Material fields: ${formatMaterialTileStats(worldgen.materialTileStats)}<br/>
     Cave graph: ${formatCaveGraphStats(worldgen.caveGraphStats)}<br/>
     Chunk cache: ${streamer.lastStats.cacheEntries} entries / ${streamer.lastStats.cacheMB.toFixed(1)} MB | Hits/misses: ${streamer.lastStats.cacheHits}/${streamer.lastStats.cacheMisses} | Array pool: ${streamer.lastStats.pooledArrays} / ${streamer.lastStats.pooledMB.toFixed(1)} MB, reuse ${streamer.lastStats.poolHits}/${streamer.lastStats.poolMisses}<br/>
-    Worker scratch: ${streamer.lastStats.workerScratchMB.toFixed(3)} MB arenas, reuse ${streamer.lastStats.workerScratchReuses} | Transfer alloc: ${streamer.lastStats.workerTransferMB.toFixed(1)} MB / ${streamer.lastStats.workerTransferAllocations} | Shared pages: ${streamer.lastStats.sharedQueuePages} job / ${streamer.lastStats.sharedRemeshPages} remesh / ${streamer.lastStats.sharedResultPages} result, ${sharedGenerateLine}; remesh/results ${streamer.lastStats.sharedRemeshDispatches}/${streamer.lastStats.sharedResultChunks}, cache copies ${(streamer.lastStats.sharedResultCacheCopyBytes / (1024 * 1024)).toFixed(1)} MB<br/>
+    Worker scratch: ${streamer.lastStats.workerScratchMB.toFixed(3)} MB arenas, reuse ${streamer.lastStats.workerScratchReuses} | Transfer alloc: ${streamer.lastStats.workerTransferMB.toFixed(1)} MB / ${streamer.lastStats.workerTransferAllocations} | Shared pages: ${streamer.lastStats.sharedQueuePages} job / ${streamer.lastStats.sharedRemeshPages} remesh / ${streamer.lastStats.sharedResultPages} result, ${sharedGenerateLine}; remesh/results ${streamer.lastStats.sharedRemeshDispatches}/${streamer.lastStats.sharedResultChunks}, cache borrowed ${streamer.lastStats.sharedResultCacheBorrowedChunks}/${(streamer.lastStats.sharedResultCacheBorrowedBytes / (1024 * 1024)).toFixed(1)} MB, copies ${(streamer.lastStats.sharedResultCacheCopyBytes / (1024 * 1024)).toFixed(1)} MB<br/>
     Region ${regionName} save/load/export/import: ${streamer.lastStats.savedRegionChunks}/${streamer.lastStats.loadedRegionChunks}/${streamer.lastStats.exportedRegionChunks}/${streamer.lastStats.importedRegionChunks} chunks | Slot: ${slotStatus}<br/>
     Region compression: ${compressionStatus}<br/>
     ${regionDiffLine ? `${regionDiffLine}<br/>` : ''}
@@ -6653,23 +6951,64 @@ async function main() {
     setStreamRadius: (radius) => settingsPanel?.setValue('streamRadius', radius),
   });
 
+  const frameProbeEnabled = readBooleanUrlOverride('test.frameProbe', 'frameProbe') === true;
+  const frameProbe: FrameProbeState | null = frameProbeEnabled
+    ? { samples: [], maxBySection: {} }
+    : null;
+  if (frameProbe) {
+    (window as unknown as { __stormCanyonFrameProbe?: FrameProbeState }).__stormCanyonFrameProbe = frameProbe;
+  }
+
   let last = performance.now();
   let fps = 60;
+  let lastDiagnosticUiUpdate = Number.NEGATIVE_INFINITY;
+  let lastDiagnosticCameraMoveTime = performance.now();
+  let lastDiagnosticCameraPosition = {
+    x: camera.position[0],
+    y: camera.position[1],
+    z: camera.position[2],
+  };
   function frame(now: number): void {
+    const frameProbeSections: Record<string, number> | null = frameProbe ? {} : null;
+    const frameProbeStart = frameProbe ? performance.now() : 0;
+    let frameProbeMark = frameProbeStart;
+    const markFrameProbe = (name: string): void => {
+      if (!frameProbe || !frameProbeSections) return;
+      const next = performance.now();
+      frameProbeSections[name] = next - frameProbeMark;
+      frameProbe.maxBySection[name] = Math.max(frameProbe.maxBySection[name] ?? 0, frameProbeSections[name]);
+      frameProbeMark = next;
+    };
     automationFrame++;
     const dt = Math.min(0.05, (now - last) / 1000);
     last = now;
     fps = fps * 0.92 + (1 / Math.max(dt, 0.0001)) * 0.08;
     updateCamera(dt);
+    if (Math.hypot(
+      camera.position[0] - lastDiagnosticCameraPosition.x,
+      camera.position[1] - lastDiagnosticCameraPosition.y,
+      camera.position[2] - lastDiagnosticCameraPosition.z,
+    ) > DIAGNOSTIC_CAMERA_MOVE_EPSILON) {
+      lastDiagnosticCameraMoveTime = now;
+    }
+    lastDiagnosticCameraPosition = {
+      x: camera.position[0],
+      y: camera.position[1],
+      z: camera.position[2],
+    };
+    const diagnosticCameraMoving = now - lastDiagnosticCameraMoveTime < DIAGNOSTIC_CAMERA_MOVING_SECONDS * 1000;
+    markFrameProbe('camera');
     worldgenTileCache.ensureTilesAround(camera.position[0], camera.position[2], 1);
     erosionTileCache.ensureTilesAround(camera.position[0], camera.position[2], 1);
     caveGraphTileCache.ensureTilesAround(camera.position[0], camera.position[2], 1);
     materialTileCache.ensureTilesAround(camera.position[0], camera.position[2], 1);
+    markFrameProbe('tilePrefetch');
     game.update(camera, streamer.editLog);
     if (settings.gameMarkersEnabled) {
       const markerInstances = game.consumeMarkerInstances();
       if (markerInstances) renderer.setGameMarkers(markerInstances);
     }
+    markFrameProbe('game');
     const brushOptions = currentBrushOptions();
     const brushPreviewMarkers = settings.brushPreviewEnabled
       ? brushPreviewMarkerInstances(camera, brushOptions)
@@ -6678,41 +7017,62 @@ async function main() {
       ? streamer.debugEditMarkerInstances(true)
       : null;
     renderer.setDebugMarkers(combineMarkerInstances(brushPreviewMarkers, dirtyMarkers));
+    markFrameProbe('markers');
     streamer.update(camera);
-    settingsPanel?.setBrushInspector(createBrushInspectorState(camera, settings, brushOptions));
-    settingsPanel?.setRegionDiff(createRegionDiffPanelState(streamer.lastRegionDiff));
-    updateEditHistoryPanel();
-    renderDensityPanel(
-      densityPanel,
-      settings.debugView === DEBUG_VIEW_DENSITY_SLICE ? streamer.densitySliceForCamera(camera, settings) : null,
-      settings.densityPanelVisible && settings.debugView === DEBUG_VIEW_DENSITY_SLICE,
-      densityCaptureLibrary,
-      densitySliceDiff,
-    );
+    markFrameProbe('streamer');
     const aspect = canvas.width / Math.max(1, canvas.height);
     const viewProj = camera.viewProjection(aspect);
     renderer.render(camera, viewProj, now / 1000);
+    markFrameProbe('render');
     const profile = profiler.sample(dt, renderer, streamer);
     updateAutoQuality(profile, now);
-    updateOverlay(
-      overlay,
-      fps,
-      renderer,
-      streamer,
-      camera,
-      profile,
-      game.snapshot(camera),
-      settings,
-      regionSlotInfos.find(info => info.key === currentRegionSlot().key),
-      densitySliceDiff,
-      currentRegionSlot().name,
-      pendingRegionImport,
-      autoQualityState,
-      browserWorkerBenchmarkCaptures,
-      browserWorkerBenchmarkRunning,
-    );
+    markFrameProbe('quality');
+    if (!diagnosticCameraMoving && now - lastDiagnosticUiUpdate >= DIAGNOSTIC_UI_UPDATE_INTERVAL_MS) {
+      lastDiagnosticUiUpdate = now;
+      settingsPanel?.setBrushInspector(createBrushInspectorState(camera, settings, brushOptions));
+      settingsPanel?.setRegionDiff(createRegionDiffPanelState(streamer.lastRegionDiff));
+      updateEditHistoryPanel();
+      renderDensityPanel(
+        densityPanel,
+        settings.debugView === DEBUG_VIEW_DENSITY_SLICE ? streamer.densitySliceForCamera(camera, settings) : null,
+        settings.densityPanelVisible && settings.debugView === DEBUG_VIEW_DENSITY_SLICE,
+        densityCaptureLibrary,
+        densitySliceDiff,
+      );
+      updateOverlay(
+        overlay,
+        fps,
+        renderer,
+        streamer,
+        camera,
+        profile,
+        game.snapshot(camera),
+        settings,
+        regionSlotInfos.find(info => info.key === currentRegionSlot().key),
+        densitySliceDiff,
+        currentRegionSlot().name,
+        pendingRegionImport,
+        autoQualityState,
+        browserWorkerBenchmarkCaptures,
+        browserWorkerBenchmarkRunning,
+      );
+    }
+    markFrameProbe('diagnostics');
     applyPanelVisibility(settings, overlay, settingsRoot, densityPanel, regionBrowser);
     pumpAutomation();
+    markFrameProbe('automation');
+    if (frameProbe && frameProbeSections) {
+      const total = performance.now() - frameProbeStart;
+      frameProbe.maxBySection.total = Math.max(frameProbe.maxBySection.total ?? 0, total);
+      if (total >= 24 || frameProbe.samples.length < 12) {
+        frameProbe.samples.push({
+          t: Math.round(performance.now()),
+          total,
+          sections: { ...frameProbeSections },
+        });
+        if (frameProbe.samples.length > 240) frameProbe.samples.splice(0, frameProbe.samples.length - 240);
+      }
+    }
     requestAnimationFrame(frame);
   }
   requestAnimationFrame(frame);

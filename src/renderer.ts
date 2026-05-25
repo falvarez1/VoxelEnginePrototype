@@ -122,10 +122,14 @@ const TERRAIN_ARENA_MIN_VERTICES = 4_194_304;
 const TERRAIN_ARENA_MIN_INDICES = 16_777_216;
 const TERRAIN_ARENA_MIN_CLUSTERS = 32_768;
 const TERRAIN_ARENA_ORIGIN_STRIDE = 4 * Float32Array.BYTES_PER_ELEMENT;
-const TERRAIN_INDIRECT_REPLAY_STARTUP_SLOTS = 4096;
-const TERRAIN_INDIRECT_REPLAY_MIN_SLOTS = 2048;
-const TERRAIN_INDIRECT_REPLAY_HEADROOM_SLOTS = 1536;
-const TERRAIN_INDIRECT_REPLAY_VISIBLE_MULTIPLIER = 1.75;
+const TERRAIN_INDIRECT_REPLAY_STARTUP_SLOTS = 2048;
+const TERRAIN_INDIRECT_REPLAY_MIN_SLOTS = 512;
+const TERRAIN_INDIRECT_REPLAY_HEADROOM_SLOTS = 768;
+const TERRAIN_INDIRECT_REPLAY_VISIBLE_MULTIPLIER = 1.2;
+const TERRAIN_INDIRECT_REPLAY_STABLE_MAX_SLOTS = 4096;
+const TERRAIN_INDIRECT_REPLAY_MOVING_MAX_SLOTS = 2048;
+const TERRAIN_INDIRECT_REPLAY_CAMERA_MOVE_EPSILON = 0.025;
+const TERRAIN_INDIRECT_REPLAY_MOVING_SECONDS = 0.22;
 const VEGETATION_SHRUB_LOD_DISTANCE = 720;
 const VEGETATION_ROCK_LOD_DISTANCE = 2600;
 const VEGETATION_SMALL_PINE_LOD_DISTANCE = 3850;
@@ -2390,6 +2394,8 @@ export class Renderer {
   lastFarTerrainCenter = { x: Infinity, z: Infinity };
   lastFarTerrainCameraPosition = { x: Infinity, z: Infinity };
   lastFarTerrainCameraMoveSeconds = 0;
+  lastTerrainReplayCameraPosition = { x: Infinity, y: Infinity, z: Infinity };
+  lastTerrainReplayCameraMoveSeconds = 0;
   stats: RendererStats = {
     drawCalls: 0,
     terrainTriangles: 0,
@@ -3351,15 +3357,38 @@ export class Renderer {
       });
   }
 
-  private terrainIndirectReplaySlots(totalSlots: number): number {
+  private updateTerrainReplayMotion(camera: FlyCamera, timeSeconds: number): boolean {
+    const previous = this.lastTerrainReplayCameraPosition;
+    if (
+      Number.isFinite(previous.x)
+      && Number.isFinite(previous.y)
+      && Number.isFinite(previous.z)
+      && Math.hypot(
+        camera.position[0] - previous.x,
+        camera.position[1] - previous.y,
+        camera.position[2] - previous.z,
+      ) > TERRAIN_INDIRECT_REPLAY_CAMERA_MOVE_EPSILON
+    ) {
+      this.lastTerrainReplayCameraMoveSeconds = timeSeconds;
+    }
+    this.lastTerrainReplayCameraPosition = {
+      x: camera.position[0],
+      y: camera.position[1],
+      z: camera.position[2],
+    };
+    return timeSeconds - this.lastTerrainReplayCameraMoveSeconds < TERRAIN_INDIRECT_REPLAY_MOVING_SECONDS;
+  }
+
+  private terrainIndirectReplaySlots(totalSlots: number, moving: boolean): number {
     const slots = Math.max(0, Math.trunc(totalSlots));
     if (slots <= 0) return 0;
+    const maxSlots = moving ? TERRAIN_INDIRECT_REPLAY_MOVING_MAX_SLOTS : TERRAIN_INDIRECT_REPLAY_STABLE_MAX_SLOTS;
     if (!this.hiZOcclusionReadbackReady) {
-      return Math.min(slots, TERRAIN_INDIRECT_REPLAY_STARTUP_SLOTS);
+      return Math.min(slots, maxSlots, TERRAIN_INDIRECT_REPLAY_STARTUP_SLOTS);
     }
     const visible = Math.max(0, Math.trunc(this.hiZOcclusion.tested));
     const target = Math.ceil(visible * TERRAIN_INDIRECT_REPLAY_VISIBLE_MULTIPLIER + TERRAIN_INDIRECT_REPLAY_HEADROOM_SLOTS);
-    return Math.min(slots, Math.max(TERRAIN_INDIRECT_REPLAY_MIN_SLOTS, target));
+    return Math.min(slots, maxSlots, Math.max(TERRAIN_INDIRECT_REPLAY_MIN_SLOTS, target));
   }
 
   render(camera: FlyCamera, viewProj: Mat4, timeSeconds: number): RendererStats {
@@ -3398,7 +3427,10 @@ export class Renderer {
       && this.depthPyramid !== null
       && this.terrainArena.clusterHighWater > 0;
     const terrainArenaTotalSlots = terrainArenaActive ? this.terrainArena.drawSlotCount : 0;
-    const terrainArenaReplaySlots = this.terrainIndirectReplaySlots(terrainArenaTotalSlots);
+    const terrainArenaReplaySlots = this.terrainIndirectReplaySlots(
+      terrainArenaTotalSlots,
+      this.updateTerrainReplayMotion(camera, timeSeconds),
+    );
     if (terrainArenaActive) {
       this.terrainArena.updateCullParams(
         frustumPlanes,

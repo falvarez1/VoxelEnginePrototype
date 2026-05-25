@@ -497,7 +497,7 @@ export class MaterialTileCache {
     let touched = 0;
     for (let dz = -radius; dz <= radius; dz++) {
       for (let dx = -radius; dx <= radius; dx++) {
-        this.getTile(centerTileX + dx, centerTileZ + dz, {
+        this.prefetchTile(centerTileX + dx, centerTileZ + dz, {
           reason: 'prefetch',
           priority: MATERIAL_TILE_PREFETCH_PRIORITY + dx * dx + dz * dz,
         });
@@ -508,6 +508,20 @@ export class MaterialTileCache {
     this.dropStalePrefetchRequests(centerTileX, centerTileZ, radius + 1);
     this.prefetchTiles += touched;
     return touched;
+  }
+
+  private prefetchTile(tileX: number, tileZ: number, request: MaterialTileRequestOptions): void {
+    const key = tileKey(tileX, tileZ);
+    const existing = this.tiles.get(key);
+    if (existing) {
+      if (existing.source === 'typescript') {
+        this.requestPersistedTile(tileX, tileZ, key);
+        this.requestWorkerTile(tileX, tileZ, key, request);
+      }
+      return;
+    }
+    this.requestPersistedTile(tileX, tileZ, key);
+    this.requestWorkerTile(tileX, tileZ, key, request);
   }
 
   stats(): MaterialTileStats {

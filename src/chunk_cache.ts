@@ -27,6 +27,11 @@ export interface ChunkCacheStats {
   poolMisses: number;
 }
 
+export interface ChunkCachePutOptions {
+  ownsArrays?: boolean;
+  onRelease?: () => void;
+}
+
 export interface PersistedChunkMesh extends CachedChunkMesh {
   key: string;
   cx: number;
@@ -50,6 +55,8 @@ interface EncodedChunkMesh {
   stats: ChunkMeshStats;
   bytes: number;
   lastUsed: number;
+  ownsArrays: boolean;
+  onRelease?: () => void;
 }
 
 function clamp(v: number, lo: number, hi: number): number {
@@ -105,8 +112,12 @@ export class CompressedChunkCache {
     frame: TerrainPackFrame,
     bounds: SphereBounds,
     stats: ChunkMeshStats,
-  ): void {
-    if (!vertices.length || !indices.length) return;
+    options: ChunkCachePutOptions = {},
+  ): boolean {
+    if (!vertices.length || !indices.length) {
+      options.onRelease?.();
+      return false;
+    }
     const next: Omit<EncodedChunkMesh, 'bytes' | 'lastUsed'> = {
       key,
       cx,
@@ -120,13 +131,19 @@ export class CompressedChunkCache {
       frame,
       bounds,
       stats,
+      ownsArrays: options.ownsArrays !== false,
+      onRelease: options.onRelease,
     };
     const entry: EncodedChunkMesh = { ...next, bytes: byteLengthOf(next), lastUsed: ++this.clock };
     this.delete(key);
-    if (entry.bytes > this.maxBytes) return;
+    if (entry.bytes > this.maxBytes) {
+      this.releaseEntry(entry);
+      return false;
+    }
     this.entries.set(key, entry);
     this.bytes += entry.bytes;
     this.evict();
+    return this.entries.get(key) === entry;
   }
 
   invalidateSphere(x: number, y: number, z: number, radius: number): void {
@@ -218,10 +235,13 @@ export class CompressedChunkCache {
   }
 
   private releaseEntry(entry: EncodedChunkMesh): void {
-    this.pool.release(entry.vertices);
-    this.pool.release(entry.indices);
-    this.pool.release(entry.densitySamples);
-    this.pool.release(entry.vegetation);
+    if (entry.ownsArrays) {
+      this.pool.release(entry.vertices);
+      this.pool.release(entry.indices);
+      this.pool.release(entry.densitySamples);
+      this.pool.release(entry.vegetation);
+    }
+    entry.onRelease?.();
   }
 
   private evict(): void {

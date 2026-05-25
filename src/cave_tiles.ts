@@ -658,7 +658,7 @@ export class CaveGraphTileCache {
     candidates.sort((a, b) => a.distanceSq - b.distanceSq || Math.abs(a.dx) + Math.abs(a.dz) - Math.abs(b.dx) - Math.abs(b.dz));
     let touched = 0;
     for (const candidate of candidates) {
-      this.getTile(tileX + candidate.dx, tileZ + candidate.dz, {
+      this.prefetchTile(tileX + candidate.dx, tileZ + candidate.dz, {
         reason: 'prefetch',
         priority: candidate.distanceSq,
       });
@@ -666,6 +666,20 @@ export class CaveGraphTileCache {
     }
     this.prefetchTiles += touched;
     return touched;
+  }
+
+  private prefetchTile(tileX: number, tileZ: number, request: CaveGraphTileRequestOptions): void {
+    const key = tileKey(tileX, tileZ);
+    const existing = this.tiles.get(key);
+    if (existing) {
+      if (existing.source === 'generated') {
+        this.requestPersistedTile(tileX, tileZ, key);
+        this.requestWorkerTile(tileX, tileZ, key, request);
+      }
+      return;
+    }
+    this.requestPersistedTile(tileX, tileZ, key);
+    this.requestWorkerTile(tileX, tileZ, key, request);
   }
 
   sample(x: number, y: number, z: number): CaveGraphProbe {
