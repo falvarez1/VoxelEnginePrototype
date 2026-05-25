@@ -1,31 +1,34 @@
-export function clamp(x, a, b) { return Math.max(a, Math.min(b, x)); }
-export function lerp(a, b, t) { return a + (b - a) * t; }
+export type Vec3 = Float32Array;
+export type Mat4 = Float32Array;
 
-export function vec3(x = 0, y = 0, z = 0) { return new Float32Array([x, y, z]); }
-export function add(a, b) { return vec3(a[0] + b[0], a[1] + b[1], a[2] + b[2]); }
-export function sub(a, b) { return vec3(a[0] - b[0], a[1] - b[1], a[2] - b[2]); }
-export function scale(a, s) { return vec3(a[0] * s, a[1] * s, a[2] * s); }
-export function dot(a, b) { return a[0] * b[0] + a[1] * b[1] + a[2] * b[2]; }
-export function cross(a, b) {
+export function clamp(x: number, a: number, b: number): number { return Math.max(a, Math.min(b, x)); }
+export function lerp(a: number, b: number, t: number): number { return a + (b - a) * t; }
+
+export function vec3(x = 0, y = 0, z = 0): Vec3 { return new Float32Array([x, y, z]); }
+export function add(a: Vec3, b: Vec3): Vec3 { return vec3(a[0] + b[0], a[1] + b[1], a[2] + b[2]); }
+export function sub(a: Vec3, b: Vec3): Vec3 { return vec3(a[0] - b[0], a[1] - b[1], a[2] - b[2]); }
+export function scale(a: Vec3, s: number): Vec3 { return vec3(a[0] * s, a[1] * s, a[2] * s); }
+export function dot(a: Vec3, b: Vec3): number { return a[0] * b[0] + a[1] * b[1] + a[2] * b[2]; }
+export function cross(a: Vec3, b: Vec3): Vec3 {
   return vec3(
     a[1] * b[2] - a[2] * b[1],
     a[2] * b[0] - a[0] * b[2],
     a[0] * b[1] - a[1] * b[0],
   );
 }
-export function length(a) { return Math.hypot(a[0], a[1], a[2]); }
-export function normalize(a) {
+export function length(a: Vec3): number { return Math.hypot(a[0], a[1], a[2]); }
+export function normalize(a: Vec3): Vec3 {
   const len = length(a) || 1;
   return vec3(a[0] / len, a[1] / len, a[2] / len);
 }
 
-export function mat4Identity() {
+export function mat4Identity(): Mat4 {
   const m = new Float32Array(16);
   m[0] = 1; m[5] = 1; m[10] = 1; m[15] = 1;
   return m;
 }
 
-export function mat4Perspective(fovyRadians, aspect, near, far) {
+export function mat4Perspective(fovyRadians: number, aspect: number, near: number, far: number): Mat4 {
   const f = 1.0 / Math.tan(fovyRadians / 2);
   const nf = 1 / (near - far);
   const out = new Float32Array(16);
@@ -37,7 +40,7 @@ export function mat4Perspective(fovyRadians, aspect, near, far) {
   return out;
 }
 
-export function mat4LookAt(eye, center, up) {
+export function mat4LookAt(eye: Vec3, center: Vec3, up: Vec3): Mat4 {
   const f = normalize(sub(center, eye));
   const s = normalize(cross(f, up));
   const u = cross(s, f);
@@ -51,7 +54,7 @@ export function mat4LookAt(eye, center, up) {
   return out;
 }
 
-export function mat4Multiply(a, b) {
+export function mat4Multiply(a: Mat4, b: Mat4): Mat4 {
   const out = new Float32Array(16);
   for (let c = 0; c < 4; c++) {
     for (let r = 0; r < 4; r++) {
@@ -66,30 +69,39 @@ export function mat4Multiply(a, b) {
 }
 
 export class FlyCamera {
+  position: Vec3;
+  yaw: number;
+  pitch: number;
+  speed: number;
+  fastMultiplier: number;
+  slowMultiplier: number;
+  fovDegrees: number;
+
   constructor() {
-    this.position = vec3(10, 38, -50);
-    this.yaw = 0.35;
-    this.pitch = -0.18;
+    this.position = vec3(96, 390, -1320);
+    this.yaw = 0.018;
+    this.pitch = -0.335;
     this.speed = 38;
     this.fastMultiplier = 3.0;
     this.slowMultiplier = 0.25;
+    this.fovDegrees = 54;
   }
 
-  forward() {
+  forward(): Vec3 {
     const cp = Math.cos(this.pitch);
     return normalize(vec3(Math.sin(this.yaw) * cp, Math.sin(this.pitch), Math.cos(this.yaw) * cp));
   }
 
-  right() {
+  right(): Vec3 {
     const f = this.forward();
     return normalize(cross(f, vec3(0, 1, 0)));
   }
 
-  viewProjection(aspect) {
+  viewProjection(aspect: number): Mat4 {
     const f = this.forward();
     const center = add(this.position, f);
     const view = mat4LookAt(this.position, center, vec3(0, 1, 0));
-    const proj = mat4Perspective(70 * Math.PI / 180, aspect, 0.1, 5000.0);
+    const proj = mat4Perspective(this.fovDegrees * Math.PI / 180, aspect, 0.1, 5000.0);
     return mat4Multiply(proj, view);
   }
 }

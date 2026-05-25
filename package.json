@@ -5,14 +5,30 @@
   "type": "module",
   "description": "Browser-first WebGPU + WebAssembly voxel terrain prototype with chunk streaming, SDF meshing, vegetation, water, and runtime carving.",
   "scripts": {
-    "start": "node scripts/serve.mjs",
+    "start": "vite --host 127.0.0.1",
+    "dev": "vite --host 127.0.0.1",
     "serve": "node scripts/serve.mjs",
+    "build": "vite build",
+    "preview": "vite preview --host 127.0.0.1",
+    "typecheck": "tsc -p tsconfig.json",
     "build:wasm": "bash scripts/build-wasm.sh",
-    "test": "node scripts/smoke-test.mjs"
+    "test": "node scripts/smoke-test.mjs && node scripts/mesh-regression.mjs && node scripts/worldgen-tile-regression.mjs && node scripts/lod-selection-regression.mjs",
+    "benchmark": "node scripts/benchmark.mjs",
+    "benchmark:review": "node scripts/benchmark-review.mjs",
+    "mesh:regression": "node scripts/mesh-regression.mjs",
+    "worldgen:regression": "node scripts/worldgen-tile-regression.mjs",
+    "lod:regression": "node scripts/lod-selection-regression.mjs",
+    "visual:regression": "node scripts/visual-regression.mjs",
+    "visual:capture": "node scripts/visual-capture.mjs",
+    "density:diff": "node scripts/density-capture-diff.mjs"
   },
   "engines": {
     "node": ">=20"
   },
-  "dependencies": {},
-  "devDependencies": {}
+  "devDependencies": {
+    "@types/node": "^25.9.1",
+    "@webgpu/types": "^0.1.70",
+    "typescript": "^6.0.3",
+    "vite": "^8.0.14"
+  }
 }

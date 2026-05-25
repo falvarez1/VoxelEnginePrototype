@@ -9,52 +9,113 @@ Implemented:
 - WebGPU mesh rendering.
 - Water ribbon.
 - Vegetation instancing.
-- Runtime SDF carve edits.
-- Performance overlay.
+- Visual foundation slice for the supplied alpine reference: procedural sky with localized sun haze/cloud puffs, visual settings for exposure/atmosphere/sky/cinematic lighting, warmer shader lighting/tone mapping, a softened scenic far-vista valley floor, hybrid SDF-near/scenic-far river water, peak-biased renderer-side alpine snow caps, CPU-baked far-vista directional horizon AO/cavity shading, procedural low-sun forest-shadow streaks, smaller less intrusive near vegetation, lightweight shrub/rock scenery variants inside the existing vegetation batch, a renderer-side far-forest layer that backs off when SDF terrain is enabled, scenic far-vista height exaggeration, a higher wide valley-overlook camera, denser `12/24/48m` far-vista rings out to about `5.8km`, compact overlay styling, collapsed settings by default, hidden center crosshair for visual captures, near SDF rendering enabled by default, opt-in game/brush markers, and a `stormCanyon.engineSettings.v20` settings-storage key bump so stale visual defaults are not reused. The latest reference-gap pass keeps the raised/pulled-back camera, adds a ground-focus SDF stream anchor for high-overlook captures, lowers fog while tuning exposure/material detail, cools snow preservation, restores greener terrain in the low-sun grade, keeps renderer-only alpine snow peak-biased, smooths the scenic/SDF river height blend, switches water to an opaque depth-writing pass, lowers presentation ponds, opens near-river vegetation, and strengthens localized golden haze plus terrain contrast. It fixes a major composition failure and improves landform depth, but still does not complete the visual-quality plan or match the supplied reference without the follow-on graphics pipeline.
+- Runtime carve/build/smooth/flatten/material-paint brush edits with sphere, axis-aligned box, and camera-oriented capsule shapes.
+- Performance/settings overlay.
+- Capability-oriented auto/low/balanced/high/ultra quality presets for coarse runtime tuning, including adaptive frame-time feedback in Auto mode and exportable quality-capture snapshots.
+- Vite development/build path with checked TypeScript runtime modules.
+- Runtime profiling estimates for frame time, uploads, worker state, and GPU buffer memory.
+- Renderer-side mapped upload ring pages for GPU buffer creation, with fallback and staging telemetry in the overlay.
+- Runtime capability reporting for WebGPU limits, cross-origin isolation, SharedArrayBuffer readiness, worker buffer mode, and device-loss state.
+- TypeScript entrypoints plus shared engine contracts for settings, chunk jobs, worker messages, renderer stats, and runtime profiling.
+- CPU frustum culling for near terrain chunks, with visible/culled chunk counts in the overlay.
+- Meshlet-like cluster bounds for near-terrain chunks, uploaded into GPU storage buffers, with CPU-frustum range batching, WebGPU compute Hi-Z culling over range bounds, range-level indexed-indirect draw arguments when stable Hi-Z is active, direct contiguous range draws when Hi-Z is inactive, and visible/culled/submitted cluster/range-batch counts in the overlay.
+- GPU Hi-Z depth-pyramid generation from the `depth32float` main depth buffer after the render pass, with conservative previous-frame terrain range-batch occlusion tests plus mip-count, memory, tested-batch, and culled-batch telemetry in the runtime overlay and quality captures.
+- Batched vegetation draw submission: worker-generated patch instances are retained by patch, CPU-frustum-culled, distance-LOD-filtered for shrubs and small pines, packed into one visible-instance GPU buffer per frame, and reported through visible/culled patch, rendered-instance, instance-LOD-cull, and batch-draw telemetry.
+- Runtime terrain debug views for normals, material IDs, packed material masks, individual biome/wetness/snow mask channels, AO, chunk ID coloring, configurable cached density slices, named density-slice capture sets with JSON import/export, numeric diff telemetry, diff heatmaps, live camera/brush worldgen, cave-distance, and cave-graph probes, worldgen and cave-graph tile-cache telemetry, optional distance-aware live brush-preview markers, and dirty edit-region markers.
+- Scriptable density-capture regression comparison for exported slice JSON, with thresholded mean/max/changed-cell checks.
+- Scriptable visual-regression screenshot metrics, compact perceptual signatures, compressed full-resolution luma perceptual fields, full-resolution luma SSIM/block-SSIM checks, and diff heatmaps for reference-view PNGs, with update/compare modes and a JSON baseline in `docs/visual-quality-baseline.json`.
+- Browser-driven multi-viewport visual capture/comparison through `npm run visual:capture`, covering `1920x1080`, `1680x945`, and `390x844` baselines, with compare-mode JSON/HTML reports, signature preview/diff PNG artifacts, and full-resolution luma diff heatmaps under `output/playwright/visual-reports/`.
+- Screenshot-linked diagnostic JSON export with embedded canvas PNG, settings, camera, runtime stats, adaptive-quality state, recent quality captures, region state, worldgen probes, and density-slice/diff context.
+- Camera-centered worldgen-tile JSON export for the current `3x3` tile neighborhood, including export schema, tile schema/generator versions, field arrays, biome/water/river-network IDs, tile stats, nested cave graph tiles, settings, and live probes.
+- `32³` cells / `33³` density samples per near-terrain chunk while preserving the `32m` chunk footprint.
+- Versioned edit operation log replayed into each worker before chunk generation.
+- Undo/redo-aware edit stack for terrain carve/build/smooth/flatten/material-paint brush operations, with a branch-aware settings-panel edit-history summary showing recent applied edits, redoable edits, archived divergent branches, operation IDs, brush shape, radius, coordinates, falloff, strength, material context, and branch switch/clear actions.
+- Settings-panel brush mode, shape, radius, placement-distance, capsule-length, carve/build falloff, brush-strength, paint-material controls, material swatches, hard/soft/detail/path/terrace/tunnel brush presets, locally persisted named brush presets, and procedural paint-material picking persisted with the rest of the engine settings.
+- LRU compressed chunk mesh cache using chunk-local quantized positions, packed normals, and packed material/AO values.
+- Marching Cubes cube-edge surface extraction with face-contour loops, a center-value ambiguous-face decider, and shared standard `x`, `y`, and `z` edge caches.
+- Mesh-quality regression captures for Marching Cubes topology metrics and packed mesh hashes.
+- Experimental nested LOD-aware near-terrain rings backed by a deterministic `src/terrain_lod.ts` selector: `lod` now configures cell size and chunk scale in WASM, worker chunk stats retain LOD/cell/chunk-size/seam-mask metadata, cache/editor sphere tests use frame scale where available, the settings panel can toggle coarse LOD 1 and LOD 2 outer near-terrain rings with finer-ring overlap checks, the selector classifies coarse-to-fine LOD borders and emits an explicit transition-face schedule, per-base-cell transition worklist, deterministic transition sample/case metadata, and a regression-covered table-driven transition-prism mesh for later Transvoxel replacement. Runtime now builds an aggregate transition mesh from cached density samples and reports emitted/missing transition cells, while the native WASM core exposes a 12-sample transition-prism tetra-table cell mesher ABI that emits standard packed vertex/index buffers for all four horizontal seam sides and is covered by the smoke test. The browser runtime queues the same sampled cells to an idle terrain worker and swaps in the returned native-packed aggregate mesh when available; the renderer still appends temporary coarse-edge seam skirts as fallback. The overlay/export stats report loaded/planned LOD target buckets plus transition faces/cells, runtime transition mesh cells/triangles, and seam/skirt counts; mesh regression includes an LOD-1 capture, and `docs/lod-selection-baseline.json` covers selector/seam/transition-schedule/cell-worklist/case/mesh summaries.
+- Packed-position degenerate triangle filtering in the WASM triangle emission path.
+- Density-grid-derived normal cache for meshed vertices, avoiding per-vertex full-SDF gradient resampling.
+- Packed WebGPU terrain vertex format for normals, material IDs, AO, and enriched biome/wetness/snow mask bytes.
+- Deterministic macro continent, moisture, and temperature fields mirrored between the native WASM terrain core and TypeScript far-terrain generator, with WASM probes covered by the smoke test.
+- Runtime cached `256m` worldgen tiles in TypeScript with `17x17` elevation, macro climate, drainage, erosion, vegetation, local gradient flow, multi-scale flow accumulation, drainage basin ID, stream order, channel width, stream power, normalized biome-blend weights, material ID, normalized grass/rock/snow/mud material weights, terrain-surface cave distance/influence, river-network ID, and water-classification samples feeding live probes and export snapshots.
+- Native WASM `256m` worldgen tile buffer exports with the same 32 field slots plus biome, water, and river-network ID arrays, including mirrored multi-scale flow accumulation, drainage basin ID, stream order, channel width, stream power, normalized material-weight estimates, and cave-proximity fields, covered by smoke-test range, normalization, finite-cave-distance, stream-field, and weight-sum checks.
+- Worker-backed native worldgen tile generation and cache adoption: the runtime tile cache still returns immediate TypeScript fallback tiles, but it can queue prioritized native replacement requests for idle terrain workers, reprioritize queued work when live samples or exports need it, transfer the field/ID arrays back to the main thread, replace cached entries in memory, and report worker request/response/pending/queued/rejected/adopted/native-tile/queue-priority/queue-drop/byte telemetry in the overlay and export data.
+- Camera-neighborhood worldgen tile streaming prewarm: the frame loop now asks the tile cache to keep the camera-centered `3x3` tile neighborhood warm when the camera enters a new worldgen tile, so persistence and worker-native replacement have an owner beyond probes and exports. Stale low-priority prewarm requests are dropped when the camera tile changes far enough that queued work is no longer part of the active neighborhood.
+- IndexedDB-backed native worldgen tile persistence: adopted native tiles are stored in a dedicated bounded tile database, later cache misses can asynchronously replace TypeScript fallback tiles from that store, incompatible records are invalidated by schema version, generator version, tile size, resolution, and field-count checks, old records are pruned by save time after the retention cap, and overlay/export telemetry reports load/hit/miss/pending/save/failure/invalidated/pruned/byte counts.
+- Initial deterministic erosion tile cache in TypeScript with `256m` tiles, `17x17` samples, bounded LRU retention, camera-neighborhood prewarm, live probe fields, overlay telemetry, and nested Export Worldgen payloads for height, slope, drainage, stream power, thermal erosion, hydraulic erosion, deposition, sediment load, bedrock exposure, soil depth, and vegetation retention. The native WASM core now exposes matching erosion tile buffers, idle terrain workers can adopt native erosion tiles into the runtime cache, and adopted native erosion tiles persist through bounded IndexedDB storage with schema/generator invalidation and oldest-record pruning. Production hydraulic/thermal erosion simulation and broader production tile ownership remain in Phase 4.
+- Initial deterministic material-field cache with `256m` tiles, `17x17` samples, bounded LRU retention, camera-neighborhood prewarm, live probe fields, brush-inspector bars, overlay telemetry, nested Export Worldgen payloads, prioritized idle-worker native WASM material tile replacement, native buffer adoption, bounded IndexedDB persistence for adopted native material tiles, and regression coverage for normalized material weights, wetness, roughness, fertility, stability, shoreline, cave-surface, route-cost, and blend-confidence fields composed from worldgen, erosion, and cave graph probes. Production material ownership remains in Phase 4.
+- Deterministic worldgen, erosion, material-field, and cave graph tile regression baseline for three camera-centered `3x3` tile neighborhoods, covering TypeScript worldgen cache output, native worldgen WASM tile-buffer output, TypeScript erosion cache output, native erosion WASM tile-buffer output, TypeScript material-field cache output, native material-field WASM tile-buffer output, TypeScript cave graph output, native cave graph WASM tile-buffer output, and worldgen/erosion/material/cave graph worker-queue priority/adoption checks with field hashes, ID hashes, material-weight/cave-proximity/drainage-network fields, erosion field summaries, material-field summaries, cave passage/chamber hashes, and per-field min/max/mean summaries.
+- Chunk-local quantized WebGPU terrain positions with per-draw origin/scale buffers.
+- Packed chunk mesh transfer from workers to renderer; main thread no longer repacks generated chunks.
+- Direct packed vertex output from the C/WASM meshing core.
+- Enriched biome/wetness/snow material-mask bytes written by WASM near terrain, mirrored by the far heightfield packer, consumed by the shader, and inspectable through combined Material Masks plus individual Biome/Wetness/Snow debug views. The three-byte lane now folds in macro climate, heuristic drainage accumulation, erosion exposure, and vegetation suitability without widening the render vertex format.
+- Deterministic cave trunk, side-branch, branch-end chamber, and optional shaft SDFs in the native terrain core, mirrored by TypeScript cave-distance probes, exported through `get_cave_distance`, and covered by smoke plus mesh-quality regression baselines.
+- Initial deterministic cave graph tile cache in TypeScript with `256m` tiles, stable trunk/branch/shaft passage IDs, branch-end chamber metadata, biome hooks, nearest-feature camera/brush probes, bounded IndexedDB persistence with schema/generator invalidation and retention pruning, overlay stats, and nested Export Worldgen payloads. The native WASM core exposes matching cave graph tile buffers with numeric passage/chamber fields, schema/generator exports, regression parity checks, and worker-backed native tile adoption through the idle terrain worker pool. Richer streaming ownership and production cave graph invalidation remain in Phase 4.
+- Material-paint edits replay through the worker/WASM edit log, override near-terrain vertex material IDs during full generation or cached-density remesh, persist through region edit logs, and leave density samples unchanged.
+- Carve/build falloff edits replay in order through the worker/WASM edit log, use smooth SDF union/subtraction for sphere/box/capsule sculpting, persist through region edit logs, remain compatible with hard-edged legacy edits, and are covered by smoke plus mesh-quality regression gates.
+- Smooth edits replay in order through the worker/WASM edit log, mutate generated or cached `33³` density grids, persist through region edit logs, and are covered by smoke, benchmark, and mesh-quality regression gates.
+- Flatten edits replay in order through the worker/WASM edit log, blend generated or cached `33³` density grids toward the brush-center horizontal plane, persist through region edit logs, support sphere/box/capsule shapes, and are covered by smoke, benchmark, and mesh-quality regression gates.
+- Camera-centered far heightfield clipmap rings out to about 5.8km, using 12m/24m/48m spacing to keep high-altitude horizons visible without volumetric meshing every distant tile.
+- Quantized `i16` density samples exported by WASM and stored with chunk cache entries.
+- Shared typed-array pool for restored/imported chunk payloads, with overlay reuse telemetry.
+- Worker-local scratch arena telemetry for reusable temporary staging and transferable/shared-result output allocation pressure.
+- SharedArrayBuffer per-worker batched generate job pages, cached-density remesh payload pages, and result arenas when cross-origin isolation is available, with overlay page/job/batch/result-copy telemetry and transferable fallback for oversized results.
+- WASM `mesh_cached_chunk` path for polygonizing an existing quantized density buffer.
+- Streamer edit rebuilds can remesh dirty chunks from cached density when samples are available.
+- IndexedDB multi-region slot persistence for edit logs and cached chunk density/render payloads.
+- Compressed region payloads for IndexedDB slots and portable `.scvr` files: delta-varint density plus byte-LZSS packed vertices, indices, and vegetation where smaller, with legacy raw import support.
+- Region persistence telemetry for saved slot chunk/edit counts, save time, and raw-vs-encoded compression ratios.
+- Active-vs-saved region diff telemetry for selected slots, including chunk coverage, changed cached payload fingerprints, signature-aware edit-log differences, sampled active-only/saved-only/changed operations, and edit-branch differences.
+- Renameable region slot display metadata, persisted locally and mirrored into IndexedDB saved-slot metadata.
+- Live region browser with per-slot selection, saved chunk/edit metadata, saved-time state, compression footprint, raw/LZSS/delta-varint codec payload counts, aggregate storage summary, text filtering, saved-only filtering, refresh, named retention policies with custom max-slot/max-MB dry-run summaries, recent maintenance history, searchable metadata-only payload inspection, saved-vs-saved payload comparison, decode/hash payload verification, JSON maintenance-report export with inspected/comparison/audit payload metadata, bundle import/export, and row-level load/diff/export/inspect/compare/verify/clear maintenance actions.
+- Bulk region-slot management with duplicate-slot, retention-policy pruning, export-all, and import-all bundle workflows using `.scvb` files that wrap existing `.scvr` snapshots.
+- `.scvr` import preview with active-vs-file diff telemetry and explicit apply/merge actions.
+- Portable `.scvr` region file import/export with layout and payload-codec compatibility checks for edit logs and cached chunk density/render payloads.
+- Deterministic WASM benchmark scenes for generation, cached remeshing, and sphere/box/capsule/smooth/flatten edit remeshing.
+- Dedicated browser worker benchmark captures with local trend comparison, overlay reporting, maintenance-history entries, portable import/export, Export Quality/Diagnostic inclusion, and a CI-friendly artifact review script for quality-tier decisions.
+- Deterministic Marching Cubes mesh-quality regression baseline for procedural chunks, cached edit remeshes, and synthetic density fields.
+- Prototype worldgen-classified expedition game loop with in-world WebGPU markers, survey beacons, route checkpoints, clearable hazards, biome/material coverage telemetry, terrain-edit objectives for flatten/paint/carve/build tools, derived inventory/score/rank/travel telemetry, local progression persistence, and region-save integration.
 
 ## Phase 2 — Better terrain chunks
 
-- Move from `16³` to `32³` cells.
-- Store `33³` density samples.
-- Add compressed chunk cache.
-- Add chunk-local arenas and pooled typed arrays.
-- Add edit operation log.
+- Extend the current typed-array pool, worker scratch telemetry, and shared result arenas into larger region-browser workflows and stronger cache lifetime ownership.
+- Expand the current named retention policy, dry-run, maintenance-history, report-export, searchable payload-inspection, saved-vs-saved payload-comparison, and decode/hash verification workflow into stronger saved-region investigations and cache-lifetime ownership.
+- Extend the browser-driven visual capture workflow beyond compact PNG metrics/signatures and current HTML review artifacts into richer full-resolution perceptual comparison. Status: the visual baseline now stores compressed full-resolution luma fields, compare mode reports full-resolution luma delta, changed-pixel fraction, global SSIM, block-SSIM tail statistics, and writes full-resolution luma diff heatmaps.
+- Broaden the current batched SharedArrayBuffer generate queue, remesh pages, and result slots toward zero-copy cache lifetime ownership once renderer/cache aliasing rules are explicit.
 
 ## Phase 3 — Production meshing
 
-- Replace marching tetrahedra with Marching Cubes.
-- Add vertex sharing.
-- Add quantized vertex layout.
-- Add mesh clusters / meshlet-like metadata.
-- Add Transvoxel transition chunks for LOD seams.
+- Add richer brush/editor tooling and additional region-management actions around the current sphere/box/capsule edit operations, carve/build falloff, smooth mode, flatten/path mode, material paint mode, configurable placement distance, live slot browser, and `.scvb` bundle workflows.
+- Promote the current CPU-frustum range batching plus Hi-Z range-indirect bridge into GPU-owned visible-cluster compaction and production terrain draw batching.
+- Promote the native transition-cell ABI plus runtime aggregate transition-prism mesh bridge into full native Transvoxel transition mesh chunks, then remove the temporary seam-skirt contract.
 
 ## Phase 4 — World generation
 
-- Macro continent/elevation fields.
-- Drainage and river networks.
-- Cached erosion tiles.
-- Biome blending.
-- Wetness/snow/slope material masks.
-- Cave graphs and chambers.
+- Promote the current TypeScript fallback worldgen tile cache, camera-neighborhood prewarm, schema/generator-versioned IndexedDB tile persistence with bounded retention, prioritized worker-backed native tile adoption, native tile-buffer ABI, and deterministic drainage-network fields into production macro world tiles with explicit elevation, climate, flow accumulation, ocean/lake, biome IDs, biome weights, richer invalidation, persistence policy, production scheduling, and streaming ownership.
+- Replace the current deterministic multi-scale drainage-network approximation with production drainage and river-network simulation.
+- Promote the initial deterministic, worker-adopted, IndexedDB-persisted native erosion tile cache into production erosion tiles backed by explicit hydraulic/thermal erosion simulation, richer invalidation rules, production scheduling, and region/world persistence ownership.
+- Promote the current runtime biome-blend and material weights into production biome/material blending driven by climate probes, drainage, slope, elevation, erosion, and cave/river IDs.
+- Promote the current heuristic drainage, erosion, slope, moisture, temperature, vegetation-suitability, initial erosion-tile, material-weight, worker-adopted native material-field cache signals into cached production material fields and native tile-backed erosion/material layers.
+- Promote the current deterministic cave trunk/branch/chamber SDF, cached cave-proximity fields, IndexedDB-backed cave graph tiles, worker-adopted native cave graph buffers, stable passage/chamber IDs, and biome hooks into production cave graph tiles with richer chamber metadata, stronger streaming ownership, invalidation rules, production scheduling, and diagnostics.
 
 ## Phase 5 — WebGPU performance
 
-- CPU frustum culling.
-- GPU frustum culling.
-- Hi-Z depth pyramid.
-- GPU occlusion culling.
-- Indirect terrain draws.
-- Indirect vegetation draws.
-- Upload ring buffers.
+- Promote terrain-cluster culling from CPU-frustum range batching into GPU-owned frustum compaction.
+- Promote the current Hi-Z range-indirect occlusion bridge into compacted GPU-visible draw batches.
+- Replace range-level indirect terrain draws with production multi-draw or GPU-owned terrain draw arenas when WebGPU support allows.
+- Move vegetation/scenery culling deeper onto the GPU, add richer impostor/LOD support, and keep the current single visible-batch draw plus pine/shrub/rock instance-distance-LOD path as the near-term baseline.
+- Tune the current renderer upload-ring page sizing and promote it into larger GPU upload/resource arenas.
 
-## Phase 6 — Visual quality
+## Phase 6 — Visual-readiness foundations
 
-- Triplanar material textures.
-- Cascaded shadow maps.
-- SSAO/GTAO-lite.
-- Atmospheric fog.
-- Better water and foam.
-- Biome-specific vegetation assets.
+- Keep renderer settings, debug views, material IDs, smooth/flatten/material-paint edit semantics, and runtime profiling stable enough for a later graphics-focused pass.
+- Preserve current shader-only procedural material detail as a baseline.
+- Extend only engine-facing visual hooks needed by core systems, such as the current enriched material-mask lane, water-edge data, and existing quality-tier defaults.
+- Treat the current sky/cinematic-lighting/far-vista/water/vegetation/default-camera work as a first visual foundation slice started early to address the supplied reference image. The latest pass improves SDF-near composition by adding ground-focus streaming for the high overlook, far-vista density, hybrid river alignment, scenic river continuity, peak-biased renderer-only snow thresholds, far-vista directional horizon AO/cavity shading, localized sky haze/cloud hooks, procedural low-sun shadowing, more open near-river vegetation, opt-in marker visibility, lightweight rock/shrub scene dressing, lowered foreground review ponds, stronger water visibility, and default reference framing without changing physical terrain fields. Keep future visual work diagnostic-safe until the core roadmap is complete, and refresh mesh/worldgen/visual baselines when physical terrain fields intentionally change.
+- Defer deeper terrain material art direction, cave-surface material polish, production water, richer scenery/impostors, shadow maps, AO, visual-regression automation, and heavier graphics features to the follow-on visual-quality plan; the initial cave graph probes are data hooks for that later shading work, not the graphics pass itself.
 
 ## Phase 7 — Rust production core
 
@@ -66,9 +127,13 @@ Implemented:
 
 ## Phase 8 — Editor and hardening
 
-- Brush UI.
-- Material painting.
-- Undo/redo.
-- Save/load region files.
-- Browser/device capability tiers.
-- Automated benchmark scenes.
+- Advanced brush UI.
+- Editor refinements such as palettes, falloff visualization, material weights, path/flatten refinements, and clearer history/diff UI. Status: the settings panel now includes material swatches, Detail/Path/Terrace/Tunnel/Hard/Soft brush presets, locally persisted named brush presets with save/apply/delete controls, a live brush inspector for core/falloff influence, surface/cave coverage, material weights, biome weights, and terrain mask fields; the edit-history panel shows recent applied/redoable operations plus persisted branch summaries; and the Region Diff panel mirrors active-vs-saved chunk/edit/branch comparison counts plus bounded changed/active-only/saved-only samples. Dedicated visual diff panels, richer saved-region investigations, and import/export/share workflows for named brush palettes remain pending.
+- Branching edit history. Status: divergent redo paths are archived as capped persisted branches when a new edit is made after undo, can be switched back into the active edit log, and are included in save/load/import/export region metadata.
+- Region renaming and save browser management.
+- Expand browser benchmark history into portable cross-device baseline comparison and CI artifact review. Status: browser worker benchmark history can be exported/imported from the settings panel, quality/diagnostic exports carry the same captures, and `npm run benchmark:review` compares benchmark-history, quality, or diagnostic artifacts against configurable regression thresholds.
+- Expand the persisted survey-site prototype into a fuller traversal/editing game loop. Status: the current expansion adds persistent route checkpoints, clearable terrain hazards, traversal distance, derived inventory, score, and rank state on top of the survey beacons and edit-log field contracts. Deeper hazards, inventory spending, scoring balance, encounters, and authored mission structure remain pending.
+
+## Follow-on graphics track
+
+After the core roadmap above is complete, continue with `docs/plans/visual-quality-pipeline-plan.md`. The first renderer-only visual slice is now in place and aligned with that plan, but it is not equivalent to the supplied reference image; deeper graphics work should build on stable meshing, streaming, persistence, performance budgets, debug tooling, worldgen/cave data contracts, and prototype-game requirements instead of competing with them.
