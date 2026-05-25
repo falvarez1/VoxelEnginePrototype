@@ -46,29 +46,17 @@ const DEFAULT_RENDERER_SETTINGS: RendererSettings = {
 };
 
 interface RenderableChunk {
-  vertexBuffer: GPUBuffer;
-  indexBuffer: GPUBuffer;
-  originBuffer: GPUBuffer;
-  clusterBuffer: GPUBuffer;
-  clusterIndirectBuffer: GPUBuffer;
-  clusterRangeBuffer: GPUBuffer;
-  clusterRangeIndirectBuffer: GPUBuffer;
-  clusterRangeCullParamsBuffer: GPUBuffer;
-  clusterCullParamsBuffer: GPUBuffer;
-  clusterCullBindGroup: GPUBindGroup;
-  clusterRangeCullBindGroup: GPUBindGroup;
+  vertexOffset: number;
+  indexOffset: number;
+  clusterOffset: number;
+  clusterCount: number;
   indexCount: number;
   vertexCount: number;
   vertexBytes: number;
   indexBytes: number;
   originBytes: number;
-  clusterBounds: Float32Array;
   clusterBytes: number;
   indirectBytes: number;
-  rangeBytes: number;
-  rangeIndirectBytes: number;
-  rangeCullParamsBytes: number;
-  cullParamsBytes: number;
   bounds: SphereBounds;
   stats: ChunkMeshStats;
   lodSeamMask: number;
@@ -127,6 +115,10 @@ const HIZ_VIEWPROJ_EPSILON = 0.002;
 const INDIRECT_INDEXED_ARGS_U32 = 5;
 const INDIRECT_INDEXED_ARGS_BYTES = INDIRECT_INDEXED_ARGS_U32 * Uint32Array.BYTES_PER_ELEMENT;
 const VEGETATION_INSTANCE_FLOATS = 8;
+const TERRAIN_ARENA_MIN_VERTICES = 262_144;
+const TERRAIN_ARENA_MIN_INDICES = 1_048_576;
+const TERRAIN_ARENA_MIN_CLUSTERS = 16_384;
+const TERRAIN_ARENA_ORIGIN_STRIDE = 4 * Float32Array.BYTES_PER_ELEMENT;
 const VEGETATION_SHRUB_LOD_DISTANCE = 720;
 const VEGETATION_ROCK_LOD_DISTANCE = 2600;
 const VEGETATION_SMALL_PINE_LOD_DISTANCE = 3850;
@@ -379,6 +371,368 @@ class GpuUploadRing {
         page.remapping = false;
       });
   }
+}
+
+interface ArenaRange {
+  offset: number;
+  size: number;
+}
+
+class LinearRangeAllocator {
+  highWater = 0;
+  active = 0;
+  private free: ArenaRange[] = [];
+
+  allocate(size: number): number {
+    const requested = Math.max(0, Math.trunc(size));
+    if (requested <= 0) return 0;
+    for (let i = 0; i < this.free.length; i++) {
+      const range = this.free[i];
+      if (range.size < requested) continue;
+      const offset = range.offset;
+      range.offset += requested;
+      range.size -= requested;
+      if (range.size <= 0) this.free.splice(i, 1);
+      this.active += requested;
+      return offset;
+    }
+    const offset = this.highWater;
+    this.highWater += requested;
+    this.active += requested;
+    return offset;
+  }
+
+  release(offset: number, size: number): void {
+    const released = Math.max(0, Math.trunc(size));
+    if (released <= 0) return;
+    this.active = Math.max(0, this.active - released);
+    this.free.push({ offset: Math.max(0, Math.trunc(offset)), size: released });
+    this.free.sort((a, b) => a.offset - b.offset);
+    for (let i = 0; i < this.free.length - 1;) {
+      const current = this.free[i];
+      const next = this.free[i + 1];
+      if (current.offset + current.size < next.offset) {
+        i++;
+        continue;
+      }
+      const end = Math.max(current.offset + current.size, next.offset + next.size);
+      current.size = end - current.offset;
+      this.free.splice(i + 1, 1);
+    }
+  }
+}
+
+class TerrainGpuArena {
+  private vertexAllocator = new LinearRangeAllocator();
+  private indexAllocator = new LinearRangeAllocator();
+  private clusterAllocator = new LinearRangeAllocator();
+  private allocations = new Map<string, RenderableChunk>();
+  private bindGroup: GPUBindGroup | null = null;
+  private bindGroupDirty = true;
+
+  vertexBuffer: GPUBuffer | null = null;
+  originBuffer: GPUBuffer | null = null;
+  indexBuffer: GPUBuffer | null = null;
+  clusterBoundsBuffer: GPUBuffer | null = null;
+  sourceIndirectBuffer: GPUBuffer | null = null;
+  compactIndirectBuffer: GPUBuffer | null = null;
+  cullParamsBuffer: GPUBuffer;
+  vertexCapacity = 0;
+  indexCapacity = 0;
+  clusterCapacity = 0;
+
+  constructor(
+    private readonly device: GPUDevice,
+    private readonly bindGroupLayout: GPUBindGroupLayout,
+  ) {
+    this.cullParamsBuffer = createEmptyBuffer(
+      device,
+      CLUSTER_CULL_PARAMS_BYTES,
+      GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+      'terrain arena cull params',
+    );
+  }
+
+  uploadChunk(
+    key: string,
+    vertices: Uint8Array,
+    indices: Uint32Array,
+    frame: TerrainPackFrame,
+    clusterBounds: Float32Array,
+    bounds: SphereBounds,
+    stats: ChunkMeshStats,
+    lodSeamMask: number,
+    lodSeamSkirtTriangles: number,
+  ): RenderableChunk {
+    this.removeChunk(key);
+    const vertexCount = Math.floor(vertices.byteLength / PACKED_TERRAIN_VERTEX_STRIDE);
+    const indexCount = indices.length;
+    const clusterCount = Math.max(1, Math.ceil(indexCount / TERRAIN_CLUSTER_INDEX_COUNT));
+    const vertexOffset = this.vertexAllocator.allocate(vertexCount);
+    const indexOffset = this.indexAllocator.allocate(indexCount);
+    const clusterOffset = this.clusterAllocator.allocate(clusterCount);
+
+    this.ensureVertexCapacity(this.vertexAllocator.highWater);
+    this.ensureIndexCapacity(this.indexAllocator.highWater);
+    this.ensureClusterCapacity(this.clusterAllocator.highWater);
+
+    if (!this.vertexBuffer || !this.originBuffer || !this.indexBuffer || !this.clusterBoundsBuffer || !this.sourceIndirectBuffer) {
+      throw new Error('Terrain GPU arena buffers were not initialized.');
+    }
+
+    this.device.queue.writeBuffer(this.vertexBuffer, vertexOffset * PACKED_TERRAIN_VERTEX_STRIDE, vertices);
+    const originScales = new Float32Array(vertexCount * 4);
+    for (let i = 0; i < vertexCount; i++) {
+      const offset = i * 4;
+      originScales[offset + 0] = frame.origin[0];
+      originScales[offset + 1] = frame.origin[1];
+      originScales[offset + 2] = frame.origin[2];
+      originScales[offset + 3] = frame.scale;
+    }
+    this.device.queue.writeBuffer(this.originBuffer, vertexOffset * TERRAIN_ARENA_ORIGIN_STRIDE, originScales);
+    this.device.queue.writeBuffer(this.indexBuffer, indexOffset * Uint32Array.BYTES_PER_ELEMENT, indices);
+    this.device.queue.writeBuffer(this.clusterBoundsBuffer, clusterOffset * 4 * Float32Array.BYTES_PER_ELEMENT, clusterBounds);
+    this.device.queue.writeBuffer(this.sourceIndirectBuffer, clusterOffset * INDIRECT_INDEXED_ARGS_BYTES, this.buildSourceIndirectArgs(indexOffset, vertexOffset, indexCount, clusterCount));
+
+    const chunk: RenderableChunk = {
+      vertexOffset,
+      indexOffset,
+      clusterOffset,
+      clusterCount,
+      indexCount,
+      vertexCount,
+      vertexBytes: vertices.byteLength,
+      indexBytes: indices.byteLength,
+      originBytes: vertexCount * TERRAIN_ARENA_ORIGIN_STRIDE,
+      clusterBytes: clusterBounds.byteLength,
+      indirectBytes: clusterCount * INDIRECT_INDEXED_ARGS_BYTES,
+      bounds,
+      stats,
+      lodSeamMask,
+      lodSeamSkirtTriangles,
+    };
+    this.allocations.set(key, chunk);
+    return chunk;
+  }
+
+  removeChunk(key: string): RenderableChunk | null {
+    const chunk = this.allocations.get(key);
+    if (!chunk) return null;
+    if (this.sourceIndirectBuffer && chunk.clusterCount > 0) {
+      this.device.queue.writeBuffer(
+        this.sourceIndirectBuffer,
+        chunk.clusterOffset * INDIRECT_INDEXED_ARGS_BYTES,
+        new Uint32Array(chunk.clusterCount * INDIRECT_INDEXED_ARGS_U32),
+      );
+    }
+    this.vertexAllocator.release(chunk.vertexOffset, chunk.vertexCount);
+    this.indexAllocator.release(chunk.indexOffset, chunk.indexCount);
+    this.clusterAllocator.release(chunk.clusterOffset, chunk.clusterCount);
+    this.allocations.delete(key);
+    return chunk;
+  }
+
+  updateCullParams(
+    planes: Plane[],
+    viewProj: Mat4,
+    viewportWidth: number,
+    viewportHeight: number,
+    mipLevels: number,
+    occlusionEnabled: boolean,
+  ): void {
+    writeClusterCullParams(
+      this.device,
+      this.cullParamsBuffer,
+      planes,
+      viewProj,
+      this.clusterHighWater,
+      this.drawSlotCount,
+      viewportWidth,
+      viewportHeight,
+      mipLevels,
+      occlusionEnabled,
+      0,
+    );
+  }
+
+  get chunkCount(): number {
+    return this.allocations.size;
+  }
+
+  get activeClusters(): number {
+    return this.clusterAllocator.active;
+  }
+
+  get clusterHighWater(): number {
+    return this.clusterAllocator.highWater;
+  }
+
+  get drawSlotCount(): number {
+    return this.clusterAllocator.highWater;
+  }
+
+  get drawIndirectClearBytes(): number {
+    return roundUp4(this.drawSlotCount * INDIRECT_INDEXED_ARGS_BYTES);
+  }
+
+  get ready(): boolean {
+    return !!(this.vertexBuffer && this.originBuffer && this.indexBuffer && this.clusterBoundsBuffer && this.sourceIndirectBuffer && this.compactIndirectBuffer);
+  }
+
+  createBindGroup(): GPUBindGroup {
+    if (!this.ready) throw new Error('Terrain GPU arena is not ready.');
+    if (!this.bindGroup || this.bindGroupDirty) {
+      this.bindGroup = this.device.createBindGroup({
+        label: 'terrain arena cull bind group',
+        layout: this.bindGroupLayout,
+        entries: [
+          { binding: 0, resource: { buffer: this.clusterBoundsBuffer! } },
+          { binding: 1, resource: { buffer: this.sourceIndirectBuffer! } },
+          { binding: 2, resource: { buffer: this.compactIndirectBuffer! } },
+          { binding: 3, resource: { buffer: this.cullParamsBuffer } },
+        ],
+      });
+      this.bindGroupDirty = false;
+    }
+    return this.bindGroup;
+  }
+
+  gpuBytes(): number {
+    return this.vertexCapacity * PACKED_TERRAIN_VERTEX_STRIDE
+      + this.vertexCapacity * TERRAIN_ARENA_ORIGIN_STRIDE
+      + this.indexCapacity * Uint32Array.BYTES_PER_ELEMENT
+      + this.clusterCapacity * 4 * Float32Array.BYTES_PER_ELEMENT
+      + this.clusterCapacity * INDIRECT_INDEXED_ARGS_BYTES * 2
+      + CLUSTER_CULL_PARAMS_BYTES;
+  }
+
+  private buildSourceIndirectArgs(indexOffset: number, vertexOffset: number, indexCount: number, clusterCount: number): Uint32Array {
+    const args = new Uint32Array(clusterCount * INDIRECT_INDEXED_ARGS_U32);
+    for (let cluster = 0; cluster < clusterCount; cluster++) {
+      const firstIndex = indexOffset + cluster * TERRAIN_CLUSTER_INDEX_COUNT;
+      const localFirstIndex = cluster * TERRAIN_CLUSTER_INDEX_COUNT;
+      const count = Math.max(0, Math.min(TERRAIN_CLUSTER_INDEX_COUNT, indexCount - localFirstIndex));
+      const offset = cluster * INDIRECT_INDEXED_ARGS_U32;
+      args[offset + 0] = count >>> 0;
+      args[offset + 1] = 1;
+      args[offset + 2] = firstIndex >>> 0;
+      args[offset + 3] = vertexOffset >>> 0;
+      args[offset + 4] = 0;
+    }
+    return args;
+  }
+
+  private ensureVertexCapacity(requiredVertices: number): void {
+    if (this.vertexCapacity >= requiredVertices && this.vertexBuffer && this.originBuffer) return;
+    const nextCapacity = nextPowerOfTwo(Math.max(TERRAIN_ARENA_MIN_VERTICES, requiredVertices));
+    const vertexBytes = nextCapacity * PACKED_TERRAIN_VERTEX_STRIDE;
+    const originBytes = nextCapacity * TERRAIN_ARENA_ORIGIN_STRIDE;
+    this.vertexBuffer = this.recreateBuffer(
+      this.vertexBuffer,
+      this.vertexCapacity * PACKED_TERRAIN_VERTEX_STRIDE,
+      vertexBytes,
+      GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC,
+      'terrain arena vertices',
+      true,
+    );
+    this.originBuffer = this.recreateBuffer(
+      this.originBuffer,
+      this.vertexCapacity * TERRAIN_ARENA_ORIGIN_STRIDE,
+      originBytes,
+      GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC,
+      'terrain arena origin stream',
+      true,
+    );
+    this.vertexCapacity = nextCapacity;
+  }
+
+  private ensureIndexCapacity(requiredIndices: number): void {
+    if (this.indexCapacity >= requiredIndices && this.indexBuffer) return;
+    const nextCapacity = nextPowerOfTwo(Math.max(TERRAIN_ARENA_MIN_INDICES, requiredIndices));
+    this.indexBuffer = this.recreateBuffer(
+      this.indexBuffer,
+      this.indexCapacity * Uint32Array.BYTES_PER_ELEMENT,
+      nextCapacity * Uint32Array.BYTES_PER_ELEMENT,
+      GPUBufferUsage.INDEX | GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC,
+      'terrain arena indices',
+      true,
+    );
+    this.indexCapacity = nextCapacity;
+  }
+
+  private ensureClusterCapacity(requiredClusters: number): void {
+    if (this.clusterCapacity >= requiredClusters && this.clusterBoundsBuffer && this.sourceIndirectBuffer && this.compactIndirectBuffer) return;
+    const nextCapacity = nextPowerOfTwo(Math.max(TERRAIN_ARENA_MIN_CLUSTERS, requiredClusters));
+    this.clusterBoundsBuffer = this.recreateBuffer(
+      this.clusterBoundsBuffer,
+      this.clusterCapacity * 4 * Float32Array.BYTES_PER_ELEMENT,
+      nextCapacity * 4 * Float32Array.BYTES_PER_ELEMENT,
+      GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC,
+      'terrain arena cluster bounds',
+      true,
+    );
+    this.sourceIndirectBuffer = this.recreateBuffer(
+      this.sourceIndirectBuffer,
+      this.clusterCapacity * INDIRECT_INDEXED_ARGS_BYTES,
+      nextCapacity * INDIRECT_INDEXED_ARGS_BYTES,
+      GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC,
+      'terrain arena source indirect args',
+      true,
+    );
+    this.compactIndirectBuffer = this.recreateBuffer(
+      this.compactIndirectBuffer,
+      0,
+      nextCapacity * INDIRECT_INDEXED_ARGS_BYTES,
+      GPUBufferUsage.STORAGE | GPUBufferUsage.INDIRECT | GPUBufferUsage.COPY_DST,
+      'terrain arena compact indirect args',
+      false,
+    );
+    this.clusterCapacity = nextCapacity;
+    this.bindGroupDirty = true;
+  }
+
+  private recreateBuffer(
+    previous: GPUBuffer | null,
+    previousBytes: number,
+    nextBytes: number,
+    usage: GPUBufferUsageFlags,
+    label: string,
+    copyPrevious: boolean,
+  ): GPUBuffer {
+    const buffer = this.device.createBuffer({
+      label,
+      size: roundUp4(Math.max(nextBytes, 4)),
+      usage,
+    });
+    if (previous) {
+      if (copyPrevious && previousBytes > 0) {
+        const encoder = this.device.createCommandEncoder({ label: `${label} grow copy` });
+        encoder.copyBufferToBuffer(previous, 0, buffer, 0, roundUp4(previousBytes));
+        this.device.queue.submit([encoder.finish()]);
+      }
+      this.destroyAfterSubmittedWork(previous);
+    }
+    return buffer;
+  }
+
+  private destroyAfterSubmittedWork(buffer: GPUBuffer): void {
+    void this.device.queue.onSubmittedWorkDone()
+      .then(() => buffer.destroy())
+      .catch(() => {
+        try {
+          buffer.destroy();
+        } catch {
+          // Device loss cleanup is best-effort.
+        }
+      });
+  }
+}
+
+function nextPowerOfTwo(value: number): number {
+  let n = 1;
+  const target = Math.max(1, Math.ceil(value));
+  while (n < target) n *= 2;
+  return n;
 }
 
 function bytesToMB(bytes: number): number {
@@ -1544,6 +1898,118 @@ fn cs_main(@builtin(global_invocation_id) id: vec3<u32>) {
 }
 `;
 
+const TERRAIN_ARENA_CULL_SHADER = /* wgsl */`
+struct CullParams {
+  planes: array<vec4<f32>, 6>,
+  viewProj: mat4x4<f32>,
+  counts: vec4<u32>,
+  viewport: vec4<f32>,
+};
+
+struct IndirectIndexedArgs {
+  indexCount: u32,
+  instanceCount: u32,
+  firstIndex: u32,
+  baseVertex: i32,
+  firstInstance: u32,
+};
+
+@group(0) @binding(0) var<storage, read> clusterBounds: array<vec4<f32>>;
+@group(0) @binding(1) var<storage, read> sourceArgs: array<IndirectIndexedArgs>;
+@group(0) @binding(2) var<storage, read_write> compactArgs: array<IndirectIndexedArgs>;
+@group(0) @binding(3) var<uniform> params: CullParams;
+@group(1) @binding(0) var hiZDepth: texture_2d<f32>;
+@group(1) @binding(1) var<storage, read_write> visibilityCounters: array<atomic<u32>, 2>;
+
+fn cluster_visible(bounds: vec4<f32>) -> bool {
+  var visible = true;
+  for (var i = 0u; i < 6u; i = i + 1u) {
+    let plane = params.planes[i];
+    let distance = dot(plane.xyz, bounds.xyz) + plane.w;
+    if (distance < -bounds.w) {
+      visible = false;
+    }
+  }
+  return visible;
+}
+
+fn projected_occluded(bounds: vec4<f32>) -> bool {
+  if (params.viewport.z < 0.5 || params.counts.w <= 1u) {
+    return false;
+  }
+
+  var minUv = vec2<f32>(100000.0, 100000.0);
+  var maxUv = vec2<f32>(-100000.0, -100000.0);
+  var nearestDepth = 1.0;
+  let r = max(bounds.w, 0.0);
+
+  for (var corner = 0u; corner < 8u; corner = corner + 1u) {
+    let sx = select(-1.0, 1.0, (corner & 1u) != 0u);
+    let sy = select(-1.0, 1.0, (corner & 2u) != 0u);
+    let sz = select(-1.0, 1.0, (corner & 4u) != 0u);
+    let world = bounds.xyz + vec3<f32>(sx, sy, sz) * r;
+    let clip = params.viewProj * vec4<f32>(world, 1.0);
+    if (clip.w <= 0.001) {
+      return false;
+    }
+    let ndc = clip.xyz / clip.w;
+    if (ndc.z <= 0.0 || ndc.z >= 1.0) {
+      return false;
+    }
+    let uv = vec2<f32>(ndc.x * 0.5 + 0.5, 0.5 - ndc.y * 0.5);
+    minUv = min(minUv, uv);
+    maxUv = max(maxUv, uv);
+    nearestDepth = min(nearestDepth, ndc.z);
+  }
+
+  if (minUv.x < 0.0 || minUv.y < 0.0 || maxUv.x > 1.0 || maxUv.y > 1.0) {
+    return false;
+  }
+
+  let rectPixels = max((maxUv - minUv) * params.viewport.xy, vec2<f32>(1.0, 1.0));
+  let mipF = clamp(ceil(log2(max(rectPixels.x, rectPixels.y))), 0.0, f32(params.counts.w - 1u));
+  let mip = i32(u32(mipF));
+  let mipDims = vec2<f32>(textureDimensions(hiZDepth, mip));
+  let maxCoord = vec2<i32>(mipDims - vec2<f32>(1.0, 1.0));
+  let minCoord = clamp(vec2<i32>(floor(minUv * mipDims)), vec2<i32>(0, 0), maxCoord);
+  let rectMaxCoord = clamp(vec2<i32>(floor(maxUv * mipDims)), vec2<i32>(0, 0), maxCoord);
+
+  var farthestDepth = textureLoad(hiZDepth, minCoord, mip).x;
+  farthestDepth = max(farthestDepth, textureLoad(hiZDepth, vec2<i32>(rectMaxCoord.x, minCoord.y), mip).x);
+  farthestDepth = max(farthestDepth, textureLoad(hiZDepth, vec2<i32>(minCoord.x, rectMaxCoord.y), mip).x);
+  farthestDepth = max(farthestDepth, textureLoad(hiZDepth, rectMaxCoord, mip).x);
+  return farthestDepth < nearestDepth - params.viewport.w;
+}
+
+@compute @workgroup_size(64)
+fn cs_main(@builtin(global_invocation_id) id: vec3<u32>) {
+  let cluster = id.x;
+  if (cluster >= params.counts.x) {
+    return;
+  }
+
+  let args = sourceArgs[cluster];
+  if (args.indexCount == 0u || args.instanceCount == 0u) {
+    return;
+  }
+
+  let bounds = clusterBounds[cluster];
+  if (!cluster_visible(bounds)) {
+    return;
+  }
+
+  if (params.viewport.z > 0.5 && projected_occluded(bounds)) {
+    atomicAdd(&visibilityCounters[1], 1u);
+    return;
+  }
+
+  let slot = atomicAdd(&visibilityCounters[0], 1u);
+  if (slot < params.counts.y) {
+    compactArgs[slot] = args;
+  }
+}
+`;
+
 const DEPTH_PYRAMID_FIRST_SHADER = /* wgsl */`
 @group(0) @binding(0) var sourceDepth: texture_depth_2d;
 @group(0) @binding(1) var outMip: texture_storage_2d<r32float, write>;
@@ -1872,6 +2338,9 @@ export class Renderer {
   waterPipeline!: GPURenderPipeline;
   vegetationPipeline!: GPURenderPipeline;
   beaconPipeline!: GPURenderPipeline;
+  terrainArenaPipeline!: GPURenderPipeline;
+  terrainArenaCullPipeline!: GPUComputePipeline;
+  terrainArenaCullBindGroupLayout!: GPUBindGroupLayout;
   clusterCullPipeline!: GPUComputePipeline;
   clusterCullBindGroupLayout!: GPUBindGroupLayout;
   clusterCullOcclusionBindGroupLayout!: GPUBindGroupLayout;
@@ -1885,8 +2354,10 @@ export class Renderer {
   hiZOcclusionCounterBuffer!: GPUBuffer;
   hiZOcclusionReadbackBuffer!: GPUBuffer;
   hiZOcclusionReadbackPending = false;
+  hiZOcclusionReadbackReady = false;
   hiZOcclusion: HiZOcclusionCounters = { tested: 0, culled: 0 };
   uploadRing!: GpuUploadRing;
+  terrainArena!: TerrainGpuArena;
   treeVertexBuffer!: GPUBuffer;
   treeVertexCount = 0;
   vegetationBatchBuffer: GPUBuffer | null = null;
@@ -1993,6 +2464,15 @@ export class Renderer {
         { binding: 2, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'uniform' } },
       ],
     });
+    this.terrainArenaCullBindGroupLayout = this.device.createBindGroupLayout({
+      label: 'terrain arena cull bind group layout',
+      entries: [
+        { binding: 0, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'read-only-storage' } },
+        { binding: 1, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'read-only-storage' } },
+        { binding: 2, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'storage' } },
+        { binding: 3, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'uniform' } },
+      ],
+    });
     this.clusterCullOcclusionBindGroupLayout = this.device.createBindGroupLayout({
       label: 'cluster cull occlusion bind group layout',
       entries: [
@@ -2018,6 +2498,10 @@ export class Renderer {
       label: 'cluster cull pipeline layout',
       bindGroupLayouts: [this.clusterCullBindGroupLayout, this.clusterCullOcclusionBindGroupLayout],
     });
+    const terrainArenaCullPipelineLayout = this.device.createPipelineLayout({
+      label: 'terrain arena cull pipeline layout',
+      bindGroupLayouts: [this.terrainArenaCullBindGroupLayout, this.clusterCullOcclusionBindGroupLayout],
+    });
     const depthPyramidFirstPipelineLayout = this.device.createPipelineLayout({
       label: 'depth pyramid first pipeline layout',
       bindGroupLayouts: [this.depthPyramidFirstBindGroupLayout],
@@ -2030,6 +2514,7 @@ export class Renderer {
     const terrainModule = this.device.createShaderModule({ label: 'terrain shader', code: TERRAIN_SHADER });
     const skyModule = this.device.createShaderModule({ label: 'sky shader', code: SKY_SHADER });
     const clusterCullModule = this.device.createShaderModule({ label: 'cluster cull shader', code: CLUSTER_CULL_SHADER });
+    const terrainArenaCullModule = this.device.createShaderModule({ label: 'terrain arena cull shader', code: TERRAIN_ARENA_CULL_SHADER });
     const depthPyramidFirstModule = this.device.createShaderModule({ label: 'depth pyramid first shader', code: DEPTH_PYRAMID_FIRST_SHADER });
     const depthPyramidMipModule = this.device.createShaderModule({ label: 'depth pyramid mip shader', code: DEPTH_PYRAMID_MIP_SHADER });
     const waterModule = this.device.createShaderModule({ label: 'water shader', code: WATER_SHADER });
@@ -2047,6 +2532,12 @@ export class Renderer {
     const terrainOriginLayout: GPUVertexBufferLayout = {
       arrayStride: 4 * 4,
       stepMode: 'instance',
+      attributes: [
+        { shaderLocation: 3, offset: 0, format: 'float32x4' },
+      ],
+    };
+    const terrainArenaOriginLayout: GPUVertexBufferLayout = {
+      arrayStride: TERRAIN_ARENA_ORIGIN_STRIDE,
       attributes: [
         { shaderLocation: 3, offset: 0, format: 'float32x4' },
       ],
@@ -2079,10 +2570,24 @@ export class Renderer {
       depthStencil: { format: DEPTH_FORMAT, depthWriteEnabled: true, depthCompare: 'less' },
     });
 
+    this.terrainArenaPipeline = this.device.createRenderPipeline({
+      label: 'terrain arena pipeline',
+      layout: pipelineLayout,
+      vertex: { module: terrainModule, entryPoint: 'vs_main', buffers: [terrainVertexLayout, terrainArenaOriginLayout] },
+      fragment: { module: terrainModule, entryPoint: 'fs_main', targets: [{ format: this.format }] },
+      primitive: { topology: 'triangle-list', cullMode: 'none' },
+      depthStencil: { format: DEPTH_FORMAT, depthWriteEnabled: true, depthCompare: 'less' },
+    });
+
     this.clusterCullPipeline = this.device.createComputePipeline({
       label: 'cluster cull pipeline',
       layout: clusterCullPipelineLayout,
       compute: { module: clusterCullModule, entryPoint: 'cs_main' },
+    });
+    this.terrainArenaCullPipeline = this.device.createComputePipeline({
+      label: 'terrain arena cull pipeline',
+      layout: terrainArenaCullPipelineLayout,
+      compute: { module: terrainArenaCullModule, entryPoint: 'cs_main' },
     });
     this.depthPyramidFirstPipeline = this.device.createComputePipeline({
       label: 'depth pyramid first pipeline',
@@ -2189,6 +2694,7 @@ export class Renderer {
       depthStencil: { format: DEPTH_FORMAT, depthWriteEnabled: true, depthCompare: 'less' },
     });
 
+    this.terrainArena = new TerrainGpuArena(this.device, this.terrainArenaCullBindGroupLayout);
     this.resize();
     window.addEventListener('resize', () => this.resize());
   }
@@ -2322,84 +2828,21 @@ export class Renderer {
       lodSeamSkirtTriangles: seammed.skirtTriangles,
     };
     const renderBounds = expandedBoundsForLodSkirts(bounds, seammed.skirtTriangles);
-    const vertexBuffer = this.createBufferWithData(vertices, GPUBufferUsage.VERTEX, `chunk ${key} vertices`);
-    const indexBuffer = this.createBufferWithData(indices, GPUBufferUsage.INDEX, `chunk ${key} indices`);
-    const originBuffer = createTerrainOriginBuffer(this.device, frame, `chunk ${key} origin`);
     const clusterBounds = buildTerrainClusterBounds(vertices, indices, frame);
-    const clusterBuffer = this.createBufferWithData(clusterBounds, GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST, `chunk ${key} cluster bounds`);
     const clusterCount = clusterBounds.length / 4;
-    const clusterIndirectBuffer = createIndirectArgsBuffer(this.device, clusterCount, `chunk ${key} indirect args`);
-    const clusterRangeBuffer = createEmptyBuffer(
-      this.device,
-      clusterCount * 4 * Float32Array.BYTES_PER_ELEMENT,
-      GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
-      `chunk ${key} cluster range bounds`,
-    );
-    const clusterRangeIndirectBuffer = createEmptyBuffer(
-      this.device,
-      clusterCount * INDIRECT_INDEXED_ARGS_BYTES,
-      GPUBufferUsage.INDIRECT | GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
-      `chunk ${key} range indirect args`,
-    );
-    const clusterCullParamsBuffer = createEmptyBuffer(
-      this.device,
-      CLUSTER_CULL_PARAMS_BYTES,
-      GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
-      `chunk ${key} cull params`,
-    );
-    const clusterRangeCullParamsBuffer = createEmptyBuffer(
-      this.device,
-      CLUSTER_CULL_PARAMS_BYTES,
-      GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
-      `chunk ${key} range cull params`,
-    );
-    const clusterCullBindGroup = this.device.createBindGroup({
-      label: `chunk ${key} cluster cull bind group`,
-      layout: this.clusterCullBindGroupLayout,
-      entries: [
-        { binding: 0, resource: { buffer: clusterBuffer } },
-        { binding: 1, resource: { buffer: clusterIndirectBuffer } },
-        { binding: 2, resource: { buffer: clusterCullParamsBuffer } },
-      ],
-    });
-    const clusterRangeCullBindGroup = this.device.createBindGroup({
-      label: `chunk ${key} range cull bind group`,
-      layout: this.clusterCullBindGroupLayout,
-      entries: [
-        { binding: 0, resource: { buffer: clusterRangeBuffer } },
-        { binding: 1, resource: { buffer: clusterRangeIndirectBuffer } },
-        { binding: 2, resource: { buffer: clusterRangeCullParamsBuffer } },
-      ],
-    });
-    this.chunks.set(key, {
-      vertexBuffer,
-      indexBuffer,
-      originBuffer,
-      clusterBuffer,
-      clusterIndirectBuffer,
-      clusterRangeBuffer,
-      clusterRangeIndirectBuffer,
-      clusterRangeCullParamsBuffer,
-      clusterCullParamsBuffer,
-      clusterCullBindGroup,
-      clusterRangeCullBindGroup,
+    const chunk = this.terrainArena.uploadChunk(
+      key,
+      vertices,
+      indices,
+      frame,
       clusterBounds,
-      indexCount: indices.length,
-      vertexCount: vertices.length / PACKED_TERRAIN_VERTEX_STRIDE,
-      vertexBytes: vertices.byteLength,
-      indexBytes: indices.byteLength,
-      originBytes: 4 * 4,
-      clusterBytes: clusterBounds.byteLength,
-      indirectBytes: clusterCount * INDIRECT_INDEXED_ARGS_BYTES,
-      rangeBytes: clusterCount * 4 * Float32Array.BYTES_PER_ELEMENT,
-      rangeIndirectBytes: clusterCount * INDIRECT_INDEXED_ARGS_BYTES,
-      rangeCullParamsBytes: CLUSTER_CULL_PARAMS_BYTES,
-      cullParamsBytes: CLUSTER_CULL_PARAMS_BYTES,
-      bounds: renderBounds,
-      stats: nextStats,
+      renderBounds,
+      nextStats,
       lodSeamMask,
-      lodSeamSkirtTriangles: seammed.skirtTriangles,
-    });
+      seammed.skirtTriangles,
+    );
+    chunk.clusterCount = clusterCount;
+    this.chunks.set(key, chunk);
   }
 
   getChunkLodSeamMask(key: string): number {
@@ -2409,15 +2852,7 @@ export class Renderer {
   removeChunk(key: string): void {
     const chunk = this.chunks.get(key);
     if (chunk) {
-      this.destroyBuffer(chunk.vertexBuffer);
-      this.destroyBuffer(chunk.indexBuffer);
-      this.destroyBuffer(chunk.originBuffer);
-      this.destroyBuffer(chunk.clusterBuffer);
-      this.destroyBuffer(chunk.clusterIndirectBuffer);
-      this.destroyBuffer(chunk.clusterRangeBuffer);
-      this.destroyBuffer(chunk.clusterRangeIndirectBuffer);
-      this.destroyBuffer(chunk.clusterRangeCullParamsBuffer);
-      this.destroyBuffer(chunk.clusterCullParamsBuffer);
+      this.terrainArena.removeChunk(key);
       this.chunks.delete(key);
     }
     this.removeVegetationPatch(key);
@@ -2765,7 +3200,6 @@ export class Renderer {
   }
 
   memoryStats(): RendererMemoryStats {
-    let chunkMeshBytes = 0;
     let terrainClusterCount = 0;
     let terrainLod0Chunks = 0;
     let terrainLod1Chunks = 0;
@@ -2775,16 +3209,7 @@ export class Renderer {
     let terrainLodTransitionMeshChunks = 0;
     let terrainLodTransitionMeshTriangles = 0;
     for (const chunk of this.chunks.values()) {
-      chunkMeshBytes += (chunk.vertexBytes ?? 0)
-        + (chunk.indexBytes ?? 0)
-        + (chunk.originBytes ?? 0)
-        + (chunk.clusterBytes ?? 0)
-        + (chunk.indirectBytes ?? 0)
-        + (chunk.rangeBytes ?? 0)
-        + (chunk.rangeIndirectBytes ?? 0)
-        + (chunk.rangeCullParamsBytes ?? 0)
-        + (chunk.cullParamsBytes ?? 0);
-      terrainClusterCount += chunk.clusterBounds.length / 4;
+      terrainClusterCount += chunk.clusterCount;
       if (chunk.stats?.lodTransitionMesh) {
         terrainLodTransitionMeshChunks++;
         terrainLodTransitionMeshTriangles += chunk.indexCount / 3;
@@ -2797,6 +3222,7 @@ export class Renderer {
         terrainLodSkirtTriangles += chunk.lodSeamSkirtTriangles;
       }
     }
+    const chunkMeshBytes = this.terrainArena?.gpuBytes() ?? 0;
     const vegetationBytes = this.vegetationBatchCapacityBytes;
     const farTerrainBytes = this.farTerrain ? (this.farTerrain.vertexBytes ?? 0) + (this.farTerrain.indexBytes ?? 0) + (this.farTerrain.originBytes ?? 0) : 0;
     const waterBytes = this.water ? (this.water.vertexBytes ?? 0) + (this.water.indexBytes ?? 0) : 0;
@@ -2887,6 +3313,7 @@ export class Renderer {
         this.hiZOcclusion = { tested: data[0] ?? 0, culled: data[1] ?? 0 };
         this.hiZOcclusionReadbackBuffer.unmap();
         this.hiZOcclusionReadbackPending = false;
+        this.hiZOcclusionReadbackReady = true;
       })
       .catch(() => {
         this.hiZOcclusionReadbackPending = false;
@@ -2924,62 +3351,28 @@ export class Renderer {
 
     const encoder = this.device.createCommandEncoder({ label: 'frame encoder' });
     encoder.clearBuffer(this.hiZOcclusionCounterBuffer, 0, HIZ_OCCLUSION_COUNTER_BYTES);
-    const visibleTerrain: VisibleTerrainChunk[] = [];
-    if (this.settings.nearTerrainEnabled) {
-      for (const chunk of this.chunks.values()) {
-        if (!sphereInFrustum(chunk.bounds, frustumPlanes)) {
-          culledTerrainChunks++;
-          continue;
-        }
-        const clusterCount = chunk.clusterBounds.length / 4;
-        const visibleClusters: number[] = [];
-        for (let cluster = 0; cluster < clusterCount; cluster++) {
-          if (clusterSphereInFrustum(chunk.clusterBounds, cluster, frustumPlanes)) {
-            const firstIndex = cluster * TERRAIN_CLUSTER_INDEX_COUNT;
-            const indexCount = Math.max(0, Math.min(TERRAIN_CLUSTER_INDEX_COUNT, chunk.indexCount - firstIndex));
-            visibleClusters.push(cluster);
-            terrainClusters++;
-            terrainTriangles += indexCount / 3;
-          } else {
-            culledTerrainClusters++;
-          }
-        }
-        const visibleRanges = buildClusterRanges(visibleClusters, chunk.indexCount);
-        const submittedDraws = visibleRanges.length;
-        if (hiZOcclusionEnabled && visibleRanges.length > 0) {
-          const rangeBounds = buildClusterRangeBounds(chunk.clusterBounds, visibleRanges);
-          const rangeArgs = buildClusterRangeIndirectArgs(visibleRanges);
-          this.device.queue.writeBuffer(chunk.clusterRangeBuffer, 0, rangeBounds);
-          this.device.queue.writeBuffer(chunk.clusterRangeIndirectBuffer, 0, rangeArgs);
-          writeClusterCullParams(
-            this.device,
-            chunk.clusterRangeCullParamsBuffer,
-            frustumPlanes,
-            viewProj,
-            visibleRanges.length,
-            chunk.indexCount,
-            this.canvas.width,
-            this.canvas.height,
-            this.depthPyramid?.mipLevels ?? 1,
-            hiZOcclusionEnabled,
-            0,
-          );
-        }
-        terrainClusterDrawCalls += submittedDraws;
-        terrainClusterDrawsSkipped += clusterCount - visibleClusters.length;
-        visibleTerrain.push({ chunk, visibleClusters, visibleRanges });
-        visibleTerrainChunks++;
+    const terrainArenaActive = this.settings.nearTerrainEnabled
+      && this.terrainArena.ready
+      && this.depthPyramid !== null
+      && this.terrainArena.clusterHighWater > 0;
+    const terrainArenaDrawSlots = terrainArenaActive ? this.terrainArena.drawSlotCount : 0;
+    if (terrainArenaActive) {
+      this.terrainArena.updateCullParams(
+        frustumPlanes,
+        viewProj,
+        this.canvas.width,
+        this.canvas.height,
+        this.depthPyramid?.mipLevels ?? 1,
+        hiZOcclusionEnabled,
+      );
+      if (terrainArenaDrawSlots > 0 && this.terrainArena.compactIndirectBuffer) {
+        encoder.clearBuffer(this.terrainArena.compactIndirectBuffer, 0, this.terrainArena.drawIndirectClearBytes);
       }
-    }
-    if (visibleTerrain.length > 0 && hiZOcclusionEnabled) {
-      const computePass = encoder.beginComputePass({ label: 'cluster cull pass' });
-      computePass.setPipeline(this.clusterCullPipeline);
+      const computePass = encoder.beginComputePass({ label: 'terrain arena compact cull pass' });
+      computePass.setPipeline(this.terrainArenaCullPipeline);
+      computePass.setBindGroup(0, this.terrainArena.createBindGroup());
       if (this.depthPyramid) computePass.setBindGroup(1, this.depthPyramid.clusterCullBindGroup);
-      for (const item of visibleTerrain) {
-        if (item.visibleRanges.length === 0) continue;
-        computePass.setBindGroup(0, item.chunk.clusterRangeCullBindGroup);
-        computePass.dispatchWorkgroups(Math.ceil(item.visibleRanges.length / 64));
-      }
+      computePass.dispatchWorkgroups(Math.ceil(this.terrainArena.clusterHighWater / 64));
       computePass.end();
     }
     if (copyHiZCounters) {
@@ -3048,23 +3441,14 @@ export class Renderer {
       drawCalls++;
     }
 
-    if (this.settings.nearTerrainEnabled) {
-      for (const item of visibleTerrain) {
-        const chunk = item.chunk;
-        pass.setVertexBuffer(0, chunk.vertexBuffer);
-        pass.setVertexBuffer(1, chunk.originBuffer);
-        pass.setIndexBuffer(chunk.indexBuffer, 'uint32');
-        if (hiZOcclusionEnabled) {
-          for (let rangeIndex = 0; rangeIndex < item.visibleRanges.length; rangeIndex++) {
-            pass.drawIndexedIndirect(chunk.clusterRangeIndirectBuffer, rangeIndex * INDIRECT_INDEXED_ARGS_BYTES);
-            drawCalls++;
-          }
-        } else {
-          for (const range of item.visibleRanges) {
-            pass.drawIndexed(range.indexCount, 1, range.firstIndex, 0, 0);
-            drawCalls++;
-          }
-        }
+    if (terrainArenaActive && this.terrainArena.vertexBuffer && this.terrainArena.originBuffer && this.terrainArena.indexBuffer && this.terrainArena.compactIndirectBuffer) {
+      pass.setPipeline(this.terrainArenaPipeline);
+      pass.setVertexBuffer(0, this.terrainArena.vertexBuffer);
+      pass.setVertexBuffer(1, this.terrainArena.originBuffer);
+      pass.setIndexBuffer(this.terrainArena.indexBuffer, 'uint32');
+      for (let drawSlot = 0; drawSlot < terrainArenaDrawSlots; drawSlot++) {
+        pass.drawIndexedIndirect(this.terrainArena.compactIndirectBuffer, drawSlot * INDIRECT_INDEXED_ARGS_BYTES);
+        drawCalls++;
       }
     }
 
@@ -3106,6 +3490,20 @@ export class Renderer {
     this.encodeDepthPyramid(encoder, viewProj);
     this.device.queue.submit([encoder.finish()]);
     if (copyHiZCounters) this.scheduleHiZOcclusionReadback();
+
+    if (this.settings.nearTerrainEnabled) {
+      const activeClusters = this.terrainArena.activeClusters;
+      const gpuVisibleClusters = this.hiZOcclusionReadbackReady
+        ? Math.min(activeClusters, this.hiZOcclusion.tested)
+        : activeClusters;
+      terrainClusters = gpuVisibleClusters;
+      culledTerrainClusters = Math.max(0, activeClusters - gpuVisibleClusters);
+      terrainTriangles = gpuVisibleClusters * TERRAIN_CLUSTER_INDEX_COUNT / 3;
+      terrainClusterDrawCalls = terrainArenaDrawSlots;
+      terrainClusterDrawsSkipped = culledTerrainClusters;
+      visibleTerrainChunks = this.chunks.size;
+      culledTerrainChunks = 0;
+    }
 
     this.stats = {
       drawCalls,
