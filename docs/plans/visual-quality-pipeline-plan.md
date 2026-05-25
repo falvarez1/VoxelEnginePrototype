@@ -1,10 +1,13 @@
 # Visual Quality Pipeline Implementation Plan
 
 Date: 2026-05-24
+Last updated: 2026-05-25
 
 ## Goal
 
 Improve the Storm Canyon voxel prototype from the current functional low-poly renderer into a cinematic low-poly alpine renderer matching the supplied references: richer terrain material breakup, warmer directional lighting, deeper foreground contrast, atmospheric distance haze, better water, denser natural scene dressing, and a sky that contributes to the mood instead of a flat clear color.
+
+The longer-term graphics target is a Photon-class WebGPU visual pipeline, not direct Minecraft shader-pack compatibility. The engine should be able to express similar categories of effects: modular shader libraries, explicit render passes, shadow maps, deferred or hybrid lighting, screen-space effects, atmospheric scattering, water composition, post-processing, visual presets, and automation-friendly validation.
 
 ## Relationship To The Core Roadmap
 
@@ -31,6 +34,8 @@ This plan keeps the current architecture intact:
 - Existing SDF edit operation contracts, including non-spherical brush metadata, carve/build falloff, smooth and flatten strength, material-paint IDs, brush/falloff presets, procedural paint-material picking, plus the persisted brush placement-distance setting used by preview, the live brush inspector, and diagnostics.
 
 The plan deliberately avoids a Three.js rewrite, texture-heavy art pipeline, or large new dependency. The first implementation should be shader and data-pipeline driven.
+
+Shader packs such as Photon should be treated as design and feature references, not importable assets. Their Minecraft/Iris/OptiFine GLSL programs, pipeline names, built-in uniforms, texture attachments, and block/material assumptions do not map directly to the current WebGPU/WGSL renderer. Any similar effect should be implemented as original WGSL/WebGPU code on top of this engine's own material, terrain, worldgen, and validation contracts.
 
 ## Reference Images
 
@@ -71,6 +76,23 @@ The target is "cinematic low-poly alpine":
 - Water reads as reflective alpine river/lake water with fresnel, subtle waves, glints, depth color, and edge foam.
 - Forests look less evenly stamped and gain scale/color variation.
 - The sky includes gradient, horizon haze, cloud suggestion, sun disk, and sun bloom.
+- Later high-end profiles can add richer shader-pack-style effects, but they should preserve the low-poly art direction rather than turning the engine into a generic photoreal Minecraft clone.
+
+## Photon-Class Compatibility Scope
+
+The engine is not structured to drop in Photon or any other Minecraft shader pack today. The blocker is architectural, not just syntax:
+
+- Photon-style shader packs are GLSL shader programs organized around Iris/OptiFine render stages, Minecraft-provided material IDs, Minecraft textures, and named framebuffers.
+- This engine currently uses hand-authored WGSL strings embedded in `src/renderer.ts`, custom vertex formats, custom worldgen/material data, and a small number of direct WebGPU render passes.
+- There is no generalized frame graph, shader include/build system, G-buffer contract, deferred lighting pass, post/composite pass chain, shadow-map resource model, material texture registry, or shader-pack compatibility layer.
+
+The appropriate goal is therefore "Photon-class capabilities" rather than "Photon compatibility":
+
+- Support modular engine-owned WGSL shader libraries.
+- Support named render stages and resources that can be inspected, toggled, and captured.
+- Support high/ultra visual profiles that compose shadows, AO, water, atmosphere, and post effects.
+- Support automation/query-string flags for enabling passes, recording timings, exporting attachments, and comparing captures.
+- Keep third-party shader-pack import out of scope until the renderer has a stable frame graph and material contract.
 
 ## Non-Goals For The First Implementation
 
@@ -79,6 +101,8 @@ The target is "cinematic low-poly alpine":
 - Cascaded shadow maps.
 - Screen-space ambient occlusion.
 - Volumetric clouds.
+- Drop-in Minecraft/Iris/OptiFine shader-pack loading.
+- Translating third-party GLSL shader-pack programs directly into WGSL.
 - GPU culling or indirect draw refactors.
 - Replacing or retopologizing the core Marching Cubes face-contour terrain generation path.
 - Asset authoring for unique tree/rock meshes.
@@ -112,9 +136,22 @@ The renderer currently has:
 
 The visual upgrade should build on those constraints instead of changing the renderer ownership model.
 
+The renderer currently does not have the following Photon-class building blocks:
+
+- A declarative render graph or frame graph.
+- Named color/depth attachments beyond the swapchain and current depth path.
+- G-buffer attachments for albedo, normals, roughness, material weights, depth, velocity, or emissive/light accumulation.
+- A shader module/include system for shared WGSL helpers.
+- A material/texture binding registry shared by terrain, water, vegetation, scenery, and future props.
+- A shadow-map atlas, directional cascade model, or reusable shadow receiver helpers.
+- A post-processing chain for bloom, tone mapping, color grading, temporal accumulation, depth-of-field, or luma-adaptive exposure.
+- Attachment capture/export hooks for debugging intermediate render targets.
+
 ## Implementation Strategy
 
-Use four layers of improvement:
+Use two horizons of improvement.
+
+The first horizon is the current cinematic low-poly slice. It uses four layers:
 
 1. **Atmosphere and sky pass**
    Add a procedural fullscreen sky before terrain.
@@ -129,6 +166,23 @@ Use four layers of improvement:
    Improve vegetation distribution, color variation, and small ground detail using instancing and shader noise.
 
 Each layer should remain independently shippable and testable.
+
+The second horizon is the Photon-class renderer foundation. It should start only after the first visual slice and core roadmap foundations are stable enough to keep performance and diagnostics meaningful:
+
+1. **Render graph**
+   Replace ad hoc render-pass sequencing with explicit pass/resource declarations.
+
+2. **Shader library**
+   Move shared WGSL helpers out of duplicated inline shader strings and into versioned modules assembled by build/runtime utilities.
+
+3. **Hybrid deferred pipeline**
+   Add a G-buffer path for terrain/scenery lighting while keeping forward or special-case passes for water, sky, markers, transparent effects, and debug overlays.
+
+4. **Shadow, AO, atmosphere, water, and post stages**
+   Implement high-value effects as independent passes with debug toggles, timing telemetry, and capture hooks.
+
+5. **Visual profile system**
+   Map low/balanced/high/ultra quality tiers to specific pass graphs and budget limits so the engine can scale rather than merely toggle expensive effects on and off.
 
 ## Phase 1 - Renderer Uniforms And Pipeline Foundation
 
@@ -729,6 +783,281 @@ Initial budget:
 - Shader upgrades should not cause obvious frame collapse before shadow maps.
 - Vegetation density increases should be easy to tune down if needed.
 
+## Photon-Class Renderer Upgrade Track
+
+This track turns the renderer into a first-class visual pipeline capable of Photon-class effects. It does not require compatibility with Photon source files, Iris `shaders.properties`, OptiFine program naming, Minecraft block IDs, or Minecraft texture layouts. Those systems are useful references for pass organization and feature ambition, but this engine should expose its own stable WebGPU/WGSL contracts.
+
+### Entry Criteria
+
+Start this track after the current visual foundation slice and core roadmap work have stable enough baselines to detect regressions:
+
+- `npm run typecheck`, `npm run build`, `npm test`, `npm run mesh:regression`, `npm run lod:regression`, and `npm run worldgen:regression` pass or have documented unrelated baseline failures.
+- Visual captures are current for the default reference camera and clean UI-panel query-string mode.
+- Renderer arena/culling telemetry, upload-ring telemetry, depth-pyramid telemetry, and automation reports are preserved.
+- The prototype game still works with markers hidden or visible through settings/query-string flags.
+
+### Upgrade 1 - Render Graph And Resource Registry
+
+Replace hard-coded render sequencing with explicit pass and resource declarations.
+
+Target additions:
+
+- `src/render_graph.ts` for render pass, compute pass, attachment, dependency, and timing definitions.
+- `src/render_targets.ts` for swapchain, depth, G-buffer, shadow, history, and post target allocation.
+- `Renderer` ownership remains in `src/renderer.ts` initially, but pass creation and execution should move behind graph helpers as soon as two or more offscreen stages exist.
+- Every pass has a stable debug name, feature flag, GPU timing scope when supported, and attachment-capture metadata.
+- Resize, device loss, quality-tier changes, and profile changes rebuild graph resources through one path.
+
+Initial pass graph:
+
+```text
+setup/update
+sky-background
+opaque-forward-current
+water-forward-current
+markers-forward
+post-present
+```
+
+Photon-class pass graph target:
+
+```text
+setup/update
+shadow-directional
+gbuffer-opaque-terrain
+gbuffer-opaque-scenery
+deferred-lighting
+ao-screen-space
+water-composite
+atmosphere-composite
+bloom-threshold
+bloom-blur
+tone-map-color-grade
+markers-forward
+debug-overlay-present
+```
+
+Acceptance criteria:
+
+- The existing visual output is unchanged when using the compatibility graph.
+- Pass timings and enabled/disabled pass names appear in automation reports.
+- A query string can disable optional passes without interacting with UI controls.
+- Attachment allocation is centralized and survives canvas resize/device recreation.
+
+### Upgrade 2 - WGSL Shader Library And Variant System
+
+Move from large duplicated inline WGSL strings to engine-owned shader modules.
+
+Target additions:
+
+- `src/shaders/` for WGSL modules such as `scene.wgsl`, `lighting.wgsl`, `atmosphere.wgsl`, `terrain_material.wgsl`, `water.wgsl`, `shadow.wgsl`, `gbuffer.wgsl`, and `post.wgsl`.
+- A small TypeScript shader assembler that resolves local includes, injects feature defines, validates shared struct layouts, and preserves source labels for compile errors.
+- Stable shader variant keys based on visual profile, debug view, pass type, and optional feature flags.
+- A shared WGSL contract for `Scene`, material payloads, debug modes, color utilities, tone mapping, fog, normal packing, and shadow sampling.
+
+Rules:
+
+- Do not vendor or translate third-party shader-pack code as an implementation shortcut.
+- Keep shader compilation deterministic so visual-regression artifacts can identify the exact shader variant.
+- Debug views must bypass color grading, fog, and post effects unless a debug mode explicitly asks to inspect those stages.
+
+Acceptance criteria:
+
+- Terrain, water, vegetation/scenery, sky, and marker shaders compile through the same assembler.
+- Shared helpers are not copy-pasted between shader strings.
+- Shader compile failures include the module/variant name in console and automation output.
+
+### Upgrade 3 - Material Contract And Hybrid Deferred Path
+
+Introduce a material contract that can support deferred lighting without breaking edit semantics.
+
+G-buffer first pass:
+
+- `gbuffer0`: albedo plus material class or packed flags.
+- `gbuffer1`: world or view normal plus roughness.
+- `gbuffer2`: material weights/masks, wetness, snow, cave-surface, or route-cost data as profile budget allows.
+- depth: existing depth format unless a depth-prepass or reversed-Z change is deliberately planned.
+
+Material inputs:
+
+- Near terrain material ID overrides from edit-log material painting remain authoritative.
+- Existing packed biome/wetness/snow mask bytes remain the minimum terrain payload.
+- Worker-adopted material-field tiles become the production path for shader-grade weights only after their storage/versioning contracts are stable.
+- Cave graph IDs and cave-distance fields feed cave-surface shading, but they must not replace real cave mesh geometry.
+- Far-terrain and near-terrain material classification must stay visually continuous or expose mismatch metrics in diagnostics.
+
+Pipeline shape:
+
+- Start with opaque terrain and far vista in the G-buffer.
+- Add scenery/vegetation once alpha, cutout, and wind conventions are explicit.
+- Keep water, sky, markers, transparent effects, and debug overlays forward or composite-only until they have a clear deferred contract.
+
+Acceptance criteria:
+
+- A debug mode can show each G-buffer attachment.
+- Material ID, Material Masks, Biome, Wetness, Snow, AO, and Chunk ID debug views remain readable.
+- Deferred terrain lighting matches or improves the current forward terrain look before additional effects are enabled.
+- Edit, save/load, density diff, and mesh regression behavior are unchanged by the shading path.
+
+### Upgrade 4 - Shadow System
+
+Promote Phase 8 from optional single shadow map into a staged shadow system.
+
+Stages:
+
+1. Single directional shadow map for near terrain and scenery.
+2. Stabilized camera-centered orthographic fitting with texel snapping.
+3. Terrain/scenery caster culling using existing cluster and patch bounds.
+4. Cascaded shadow maps for high/ultra profiles only.
+5. Optional contact shadows or screen-space shadow refinement after G-buffer depth/normal are available.
+
+Data and controls:
+
+- Shadow resolution is profile-driven and query-string overrideable.
+- Shadow distance, cascade count, PCF size, and bias have bounded debug controls.
+- Shadow pass reports caster counts, culled counts, map resolution, GPU time, and active cascade ranges.
+
+Acceptance criteria:
+
+- Foreground trees and terrain cast readable shadows without unacceptable acne or peter-panning.
+- The current procedural forest-shadow approximation can be disabled or blended out when real shadows are active.
+- Low/balanced profiles can keep shadows off or use a single cheap map.
+- Visual captures include a shadow-on high profile and a shadow-off baseline.
+
+### Upgrade 5 - AO, Indirect Light, And Landform Occlusion
+
+Add ambient occlusion as its own pipeline stage rather than burying it in material color.
+
+Recommended order:
+
+1. Preserve current vertex AO and far-vista CPU-baked horizon/cavity terms as baseline data.
+2. Add depth/normal screen-space AO for high profiles.
+3. Add horizon-based or GTAO-lite sampling when the G-buffer is stable.
+4. Evaluate low-resolution temporal accumulation only after camera/history buffers exist.
+5. Use worldgen/erosion/material/cave fields for broad landform occlusion hints, not as a substitute for visible geometry.
+
+Acceptance criteria:
+
+- AO can be inspected as a grayscale attachment.
+- AO improves valley, cave-mouth, forest, and slope contact readability without flattening snow highlights.
+- Moving the camera does not create obvious flicker at default speed.
+
+### Upgrade 6 - Atmosphere, Clouds, And Post Composite
+
+Split the current sky/fog/tone functions into named atmosphere and post passes.
+
+Target effects:
+
+- Directional sky gradient, sun disk, sun bloom, and low-angle horizon haze.
+- Height-aware fog and valley mist.
+- Optional low-resolution volumetric fog or cloud shadows for high profiles.
+- Bloom threshold/blur/composite tuned for water glints and sun haze.
+- Exposure, tone mapping, contrast, saturation, and color-grade controls.
+- Optional temporal anti-aliasing or jitter only after velocity/history buffers exist.
+
+Acceptance criteria:
+
+- The final color pipeline is deterministic and capture-friendly.
+- Post effects can be disabled by query string to inspect raw lighting.
+- Debug views and automation captures can target pre-post and post-final outputs.
+
+### Upgrade 7 - Production Water Pipeline
+
+Move water from presentation ribbon polish into a real water composition system.
+
+Required foundations:
+
+- Terrain-integrated river/lake basin ownership in worldgen or edit data.
+- Water depth from terrain/water height difference.
+- Scene depth sampling for shoreline foam, refraction, and underwater color.
+- Sky/reflection fallback before any screen-space reflection work.
+- Flow, foam, sediment, and wet-bank data sourced from river-network/material-field tiles where possible.
+
+Staged implementation:
+
+1. Depth-aware color and shoreline foam using current water geometry.
+2. Terrain-integrated lake basin generation and edit-safe persistence semantics.
+3. Reflection/refraction composite against scene color/depth.
+4. SSR-lite or planar/local reflection only if profile budgets justify it.
+
+Acceptance criteria:
+
+- Rivers and ponds no longer rely on renderer-only presentation water walls or disconnected scenic surfaces.
+- Water can be captured with foam/depth/reflection toggles independently.
+- Water changes do not silently alter physical terrain unless the worldgen/edit pipeline intentionally owns that change.
+
+### Upgrade 8 - Material, Texture, And Scenery Asset Pipeline
+
+Keep the first pass procedural, then add richer material assets only where they solve a real visual problem.
+
+Targets:
+
+- Promote material-field tiles into shader-grade terrain material weights.
+- Add triplanar procedural/texture-array material sampling for rock, soil, snow, mud, vegetation litter, and cave surfaces.
+- Add cave-surface material polish driven by cave distance, cave graph IDs, wetness, roughness, and stability.
+- Add scenery/impostor assets for conifers, shrubs, grass tufts, rock clusters, deadwood, and expedition-game props.
+- Add material and scenery LOD rules that are profile-aware and visible in telemetry.
+
+Acceptance criteria:
+
+- Terrain material identity remains editable and inspectable.
+- Near/far material seams have regression coverage or explicit diagnostic counters.
+- Asset additions do not explode draw calls or upload-ring pressure.
+
+### Upgrade 9 - Profiles, Automation, And Validation
+
+The renderer must stay easy to automate as visual complexity grows.
+
+Query-string additions to plan for:
+
+- `visual.profile=low|balanced|high|ultra|debug`
+- `renderGraph=compat|deferred`
+- `pass.shadow=0|1`
+- `pass.ao=0|1`
+- `pass.bloom=0|1`
+- `pass.waterComposite=0|1`
+- `capture.attachments=depth,gbuffer0,gbuffer1,shadow,ao,final`
+- `automation.actions=state,diagnostic,quality,visualGraph`
+
+Automation report additions:
+
+- Active render graph name and pass list.
+- Per-pass CPU/GPU timing where available.
+- Attachment dimensions/formats/memory estimates.
+- Shader variant keys and compile status.
+- Shadow caster counts, AO sample profile, post settings, water composite settings.
+- Capture artifact paths for requested intermediate attachments.
+
+Validation additions:
+
+- Extend `scripts/visual-capture.mjs` to support profile/pass/camera matrices.
+- Extend `scripts/visual-regression.mjs` to compare pre-post and final outputs separately.
+- Add a render-graph smoke test that runs low/balanced/high profiles through URL automation.
+- Add WebGPU capability gates for optional formats, timestamp queries, storage texture usage, and attachment limits.
+
+Acceptance criteria:
+
+- A full high-profile visual capture can be run from a URL and backend report without UI interaction.
+- Low/balanced/high profiles produce clearly different pass graphs and stable reports.
+- Optional effects fail closed with a diagnostic reason when device limits are too low.
+
+### Upgrade 10 - Prototype Game Integration
+
+High-end rendering should support the prototype game rather than obscure it.
+
+Requirements:
+
+- Expedition markers, hazards, route checkpoints, and contracts remain readable in both clean-capture and gameplay modes.
+- Gameplay surfaces such as flatten paths, painted materials, carved caves, built ramps, shoreline crossings, and route hazards remain visually legible under high-end lighting.
+- Visual profiles can be changed at runtime without resetting game state, edit history, region persistence, or automation counters.
+- Game screenshots can request UI panels hidden while keeping marker layers on or off independently.
+
+Acceptance criteria:
+
+- The prototype game has at least one golden-path screenshot set for low, balanced, and high visual profiles.
+- Marker visibility and panel visibility remain query-string controlled.
+- Visual effects do not hide edit-objective feedback or debug overlays when those overlays are enabled.
+
 ## Rollout Order
 
 Recommended implementation order:
@@ -742,6 +1071,11 @@ Recommended implementation order:
 7. Tune vegetation distribution. Status: first pass started, near-tree scale reduced and far-forest density now tuned for the SDF-near reference view, with procedural receiver-shadow streaks on terrain, low-poly shrub/rock variants in the existing vegetation batch, and reduced far-forest pressure when near SDF terrain is enabled.
 8. Capture screenshots and tune constants. Status: latest multi-viewport artifacts are under `output/playwright/visual-capture/`; compare reports are under `output/playwright/visual-reports/`; aggregate metrics, compact perceptual signatures, and compressed full-resolution luma fields are stored in `docs/visual-quality-baseline.json`.
 9. Decide whether shadow mapping is worth the added complexity.
+10. Start the Photon-class upgrade track with render graph/resource registry scaffolding, but keep the compatibility graph visually equivalent.
+11. Move shared WGSL helpers into a shader library/variant assembler.
+12. Add G-buffer/deferred terrain behind `renderGraph=deferred`.
+13. Promote shadows, AO, water composite, atmosphere, bloom, and color grade as separate profile-gated passes.
+14. Extend query-string automation and visual-regression scripts to capture intermediate attachments and compare profile matrices.
 
 This order gives visible improvement early while keeping each step reversible.
 
@@ -757,6 +1091,13 @@ This order gives visible improvement early while keeping each step reversible.
 | Sky pass depth issue | Terrain hidden or invalid depth | Sky writes no depth and renders before terrain |
 | Tone mapping breaks debug views | Diagnostics less useful | Bypass tone/fog for debug modes |
 | C/WASM and TS material or mask mismatch | Near/far terrain material seams | Mirror threshold and mask changes in both `terrain_math.ts` and `native/voxel_core.c` only when changing classification |
+| Render graph migration changes output | Hard-to-debug visual regression | Start with a compatibility graph and compare against current visual baselines before adding new passes |
+| Attachment memory exceeds WebGPU limits | Startup failure or device loss on integrated GPUs | Gate G-buffer, shadow, AO, bloom, and history targets by adapter limits and visual profile |
+| Deferred path breaks transparent/special passes | Water, markers, and overlays render incorrectly | Keep water, sky, markers, transparent effects, and debug overlays forward/composite until each has a tested contract |
+| Shader library include mistakes | Runtime WGSL compile failures | Add deterministic shader variant labels, generated source maps or line markers, and browser smoke coverage for each profile |
+| Third-party shader-pack assumptions leak into engine contracts | Material/debug/edit systems become Minecraft-specific | Treat Photon-like packs as feature references only; keep engine-owned WGSL, material IDs, uniforms, and render resources |
+| Post effects hide diagnostics | Debug screenshots become misleading | Allow URL flags to capture raw, pre-post, intermediate, and final attachments independently |
+| Shadows/AO destabilize visual regression | Flicker and small camera changes cause noisy diffs | Use stable shadow fitting, deterministic sample patterns, and separate final-vs-intermediate baselines |
 
 ## Implementation Acceptance Criteria
 
@@ -774,14 +1115,23 @@ The implementation is complete when:
 - Debug views still work.
 - Existing mesh-quality, LOD-selection, worldgen/erosion/material/cave tile, and density-capture comparisons still run through `npm run mesh:regression`, `npm run lod:regression`, `npm run worldgen:regression`, and `npm run density:diff` when a visual change intentionally or accidentally changes terrain selection, terrain geometry, or worldgen outputs.
 - The default scene is materially closer to the supplied cinematic alpine references without requiring imported art assets.
+- The plan has a concrete Photon-class path that explains why Minecraft shader packs cannot be loaded directly and which engine systems must be added first.
+- Query-string automation can select visual profiles, hide UI panels, set camera/settings, trigger reports, and capture clean screenshots without manual browser interaction.
+- When the Photon-class track begins, the compatibility render graph matches the current forward renderer before deferred/shadow/AO/post features are enabled.
+- High-end effects remain profile-gated, telemetry-visible, and diagnosable through intermediate attachment captures.
 
 ## Future Enhancements After First Pass
 
-- Cascaded shadow maps.
-- GTAO-lite or horizon-based AO.
-- Triplanar material textures.
+- Render graph and attachment/resource registry.
+- WGSL shader module/include/variant assembler.
+- Hybrid deferred renderer with terrain/scenery G-buffer.
+- Single directional shadows, then cascaded shadow maps for high/ultra profiles.
+- GTAO-lite, horizon-based AO, or other depth/normal screen-space occlusion.
+- Atmosphere, bloom, tone-map, color-grade, and capture-aware post pipeline.
+- Production water composition with terrain-integrated basins, depth color, shoreline foam, and reflection/refraction stages.
+- Triplanar material textures or procedural texture arrays where procedural-only material detail is no longer enough.
 - Far-terrain clipmap-ring seam blending and richer distance shading after the explicit LOD transition-face/cell worklist, native transition-cell ABI, and runtime transition-prism mesh bridge are promoted into real full native Transvoxel transition mesh generation.
 - Dedicated scenery/prop instancing for rocks, grass tufts, and deadwood.
 - Promote the current heuristic drainage-, erosion-, IndexedDB-backed worker-adopted native erosion/material-tile-, vegetation-, material-weight-, cave-proximity-, and cave-graph-aware data into native cached production material and erosion fields.
 - Weather/time-of-day presets.
-- Screenshot comparison harness for visual regression.
+- Visual profile matrices and intermediate attachment comparison in the screenshot regression harness.

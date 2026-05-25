@@ -21,12 +21,15 @@ import type { FlyCamera, Mat4, Vec3 } from './math.ts';
 function roundUp4(n: number): number { return (n + 3) & ~3; }
 
 const FAR_TERRAIN_RINGS = [
-  { inner: 120, outer: 1152, step: 12 },
-  { inner: 1152, outer: 2688, step: 24 },
-  { inner: 2688, outer: 5760, step: 48 },
+  { inner: 120, outer: 1152, step: 16 },
+  { inner: 1152, outer: 2688, step: 32 },
+  { inner: 2688, outer: 5760, step: 64 },
 ] as const;
 const FAR_TERRAIN_RADIUS = FAR_TERRAIN_RINGS[FAR_TERRAIN_RINGS.length - 1].outer;
 const FAR_TERRAIN_SNAP = 96;
+const FAR_TERRAIN_REBUILD_IDLE_SECONDS = 0.28;
+const FAR_TERRAIN_RECENTER_DISTANCE = FAR_TERRAIN_SNAP * 16;
+const FAR_TERRAIN_CAMERA_MOVE_EPSILON = 0.05;
 const DEBUG_VIEW_SNOW_MASK = 10;
 const DEFAULT_RENDERER_SETTINGS: RendererSettings = {
   nearTerrainEnabled: true,
@@ -115,14 +118,23 @@ const HIZ_VIEWPROJ_EPSILON = 0.002;
 const INDIRECT_INDEXED_ARGS_U32 = 5;
 const INDIRECT_INDEXED_ARGS_BYTES = INDIRECT_INDEXED_ARGS_U32 * Uint32Array.BYTES_PER_ELEMENT;
 const VEGETATION_INSTANCE_FLOATS = 8;
-const TERRAIN_ARENA_MIN_VERTICES = 262_144;
-const TERRAIN_ARENA_MIN_INDICES = 1_048_576;
-const TERRAIN_ARENA_MIN_CLUSTERS = 16_384;
+const TERRAIN_ARENA_MIN_VERTICES = 4_194_304;
+const TERRAIN_ARENA_MIN_INDICES = 16_777_216;
+const TERRAIN_ARENA_MIN_CLUSTERS = 32_768;
 const TERRAIN_ARENA_ORIGIN_STRIDE = 4 * Float32Array.BYTES_PER_ELEMENT;
+const TERRAIN_INDIRECT_REPLAY_STARTUP_SLOTS = 4096;
+const TERRAIN_INDIRECT_REPLAY_MIN_SLOTS = 2048;
+const TERRAIN_INDIRECT_REPLAY_HEADROOM_SLOTS = 1536;
+const TERRAIN_INDIRECT_REPLAY_VISIBLE_MULTIPLIER = 1.75;
 const VEGETATION_SHRUB_LOD_DISTANCE = 720;
 const VEGETATION_ROCK_LOD_DISTANCE = 2600;
 const VEGETATION_SMALL_PINE_LOD_DISTANCE = 3850;
 const VEGETATION_SMALL_PINE_SCALE = 6.0;
+const WATER_RECENTER_DISTANCE = 1024;
+const WATER_SEGMENTS = 560;
+const WATER_LAKE_RINGS = 5;
+const WATER_LAKE_SIDES = 40;
+const WATER_LAKE_EDGE_SAMPLES = 24;
 const UPLOAD_RING_PAGE_BYTES = 8 * 1024 * 1024;
 const UPLOAD_RING_MAX_PAGES = 8;
 const DEPTH_FORMAT: GPUTextureFormat = 'depth32float';
@@ -138,9 +150,9 @@ const PACKED_BORDER_EPSILON = 96;
 const SCENIC_WATER_LEVEL = 8.8;
 const FAR_TERRAIN_VISUAL_BASE_HEIGHT = 1.8;
 const FAR_TERRAIN_VISUAL_HEIGHT_SCALE = 1.98;
-const SCENIC_FOREST_STEP = 19;
-const SCENIC_NEAR_FOREST_STEP = 19;
-const SCENIC_FOREST_RADIUS = 5600;
+const SCENIC_FOREST_STEP = 28;
+const SCENIC_NEAR_FOREST_STEP = 28;
+const SCENIC_FOREST_RADIUS = 4200;
 const SCENIC_FOREST_INNER_CLEARING = 36;
 const SCENIC_NEAR_FOREST_INNER_CLEARING = 44;
 const SCENIC_REFERENCE_SUN_DIR: [number, number, number] = [-0.930, 0.139, -0.339];
@@ -535,6 +547,7 @@ class TerrainGpuArena {
   updateCullParams(
     planes: Plane[],
     viewProj: Mat4,
+    drawSlotCapacity: number,
     viewportWidth: number,
     viewportHeight: number,
     mipLevels: number,
@@ -546,7 +559,7 @@ class TerrainGpuArena {
       planes,
       viewProj,
       this.clusterHighWater,
-      this.drawSlotCount,
+      drawSlotCapacity,
       viewportWidth,
       viewportHeight,
       mipLevels,
@@ -2375,6 +2388,8 @@ export class Renderer {
   farTerrain: TerrainMesh | null = null;
   lastWaterCenter = { x: Infinity, z: Infinity };
   lastFarTerrainCenter = { x: Infinity, z: Infinity };
+  lastFarTerrainCameraPosition = { x: Infinity, z: Infinity };
+  lastFarTerrainCameraMoveSeconds = 0;
   stats: RendererStats = {
     drawCalls: 0,
     terrainTriangles: 0,
@@ -2971,12 +2986,12 @@ export class Renderer {
   updateWater(cameraPosition: Vec3, force = false): void {
     const dx = cameraPosition[0] - this.lastWaterCenter.x;
     const dz = cameraPosition[2] - this.lastWaterCenter.z;
-    if (!force && Math.hypot(dx, dz) < 128 && this.water) return;
+    if (!force && Math.hypot(dx, dz) < WATER_RECENTER_DISTANCE && this.water) return;
     this.lastWaterCenter = { x: cameraPosition[0], z: cameraPosition[2] };
     this.destroyBuffer(this.water?.vertexBuffer);
     this.destroyBuffer(this.water?.indexBuffer);
 
-    const segments = 980;
+    const segments = WATER_SEGMENTS;
     const length = 7600;
     const vertices: number[] = [];
     const indices: number[] = [];
@@ -3026,8 +3041,8 @@ export class Renderer {
       const physicalGroundY = terrainHeight(centerX, centerZ);
       const groundY = this.settings.nearTerrainEnabled ? Math.min(physicalGroundY, scenicGroundY) : scenicGroundY;
       let maxLakeGroundY = groundY;
-      for (let side = 0; side < 40; side++) {
-        const angle = side / 40 * Math.PI * 2;
+      for (let side = 0; side < WATER_LAKE_EDGE_SAMPLES; side++) {
+        const angle = side / WATER_LAKE_EDGE_SAMPLES * Math.PI * 2;
         const px = Math.cos(angle) * radiusX;
         const pz = Math.sin(angle) * radiusZ;
         const x = centerX + px * c - pz * s;
@@ -3043,8 +3058,8 @@ export class Renderer {
       const edgeRelief = maxLakeGroundY - groundY;
       const waterY = baseWaterY + Math.min(Math.max(edgeRelief, 0), force ? 0.8 : 1.2) * 0.035;
       if (!force && scenicGroundY > SCENIC_WATER_LEVEL + 28.0) return;
-      const rings = 7;
-      const sides = 56;
+      const rings = WATER_LAKE_RINGS;
+      const sides = WATER_LAKE_SIDES;
       const ringStarts: number[] = [];
       const centerIndex = vertices.length / FLOAT_TERRAIN_VERTEX_FLOATS;
       vertices.push(centerX, waterY, centerZ, 0, 1, 0, 5, 0);
@@ -3117,10 +3132,26 @@ export class Renderer {
     };
   }
 
-  updateFarTerrain(cameraPosition: Vec3, force = false): void {
+  updateFarTerrain(cameraPosition: Vec3, timeSeconds: number, force = false): void {
     const snappedX = Math.round(cameraPosition[0] / FAR_TERRAIN_SNAP) * FAR_TERRAIN_SNAP;
     const snappedZ = Math.round(cameraPosition[2] / FAR_TERRAIN_SNAP) * FAR_TERRAIN_SNAP;
     if (!force && this.farTerrain && snappedX === this.lastFarTerrainCenter.x && snappedZ === this.lastFarTerrainCenter.z) return;
+
+    const previousCameraX = this.lastFarTerrainCameraPosition.x;
+    const previousCameraZ = this.lastFarTerrainCameraPosition.z;
+    if (
+      Number.isFinite(previousCameraX)
+      && Number.isFinite(previousCameraZ)
+      && Math.hypot(cameraPosition[0] - previousCameraX, cameraPosition[2] - previousCameraZ) > FAR_TERRAIN_CAMERA_MOVE_EPSILON
+    ) {
+      this.lastFarTerrainCameraMoveSeconds = timeSeconds;
+    }
+    this.lastFarTerrainCameraPosition = { x: cameraPosition[0], z: cameraPosition[2] };
+
+    const staleDistance = Math.hypot(snappedX - this.lastFarTerrainCenter.x, snappedZ - this.lastFarTerrainCenter.z);
+    if (!force && this.farTerrain && staleDistance < FAR_TERRAIN_RECENTER_DISTANCE) return;
+    const movingRecently = timeSeconds - this.lastFarTerrainCameraMoveSeconds < FAR_TERRAIN_REBUILD_IDLE_SECONDS;
+    if (!force && this.farTerrain && movingRecently) return;
 
     this.lastFarTerrainCenter = { x: snappedX, z: snappedZ };
     this.destroyBuffer(this.farTerrain?.vertexBuffer);
@@ -3320,10 +3351,21 @@ export class Renderer {
       });
   }
 
+  private terrainIndirectReplaySlots(totalSlots: number): number {
+    const slots = Math.max(0, Math.trunc(totalSlots));
+    if (slots <= 0) return 0;
+    if (!this.hiZOcclusionReadbackReady) {
+      return Math.min(slots, TERRAIN_INDIRECT_REPLAY_STARTUP_SLOTS);
+    }
+    const visible = Math.max(0, Math.trunc(this.hiZOcclusion.tested));
+    const target = Math.ceil(visible * TERRAIN_INDIRECT_REPLAY_VISIBLE_MULTIPLIER + TERRAIN_INDIRECT_REPLAY_HEADROOM_SLOTS);
+    return Math.min(slots, Math.max(TERRAIN_INDIRECT_REPLAY_MIN_SLOTS, target));
+  }
+
   render(camera: FlyCamera, viewProj: Mat4, timeSeconds: number): RendererStats {
     this.resize();
     this.writeUniforms(camera, viewProj, timeSeconds);
-    if (this.settings.farTerrainEnabled) this.updateFarTerrain(camera.position);
+    if (this.settings.farTerrainEnabled) this.updateFarTerrain(camera.position, timeSeconds);
     if (this.settings.waterEnabled) this.updateWater(camera.position);
     this.uploadRing.flush();
 
@@ -3355,18 +3397,20 @@ export class Renderer {
       && this.terrainArena.ready
       && this.depthPyramid !== null
       && this.terrainArena.clusterHighWater > 0;
-    const terrainArenaDrawSlots = terrainArenaActive ? this.terrainArena.drawSlotCount : 0;
+    const terrainArenaTotalSlots = terrainArenaActive ? this.terrainArena.drawSlotCount : 0;
+    const terrainArenaReplaySlots = this.terrainIndirectReplaySlots(terrainArenaTotalSlots);
     if (terrainArenaActive) {
       this.terrainArena.updateCullParams(
         frustumPlanes,
         viewProj,
+        terrainArenaReplaySlots,
         this.canvas.width,
         this.canvas.height,
         this.depthPyramid?.mipLevels ?? 1,
         hiZOcclusionEnabled,
       );
-      if (terrainArenaDrawSlots > 0 && this.terrainArena.compactIndirectBuffer) {
-        encoder.clearBuffer(this.terrainArena.compactIndirectBuffer, 0, this.terrainArena.drawIndirectClearBytes);
+      if (terrainArenaReplaySlots > 0 && this.terrainArena.compactIndirectBuffer) {
+        encoder.clearBuffer(this.terrainArena.compactIndirectBuffer, 0, roundUp4(terrainArenaReplaySlots * INDIRECT_INDEXED_ARGS_BYTES));
       }
       const computePass = encoder.beginComputePass({ label: 'terrain arena compact cull pass' });
       computePass.setPipeline(this.terrainArenaCullPipeline);
@@ -3446,7 +3490,7 @@ export class Renderer {
       pass.setVertexBuffer(0, this.terrainArena.vertexBuffer);
       pass.setVertexBuffer(1, this.terrainArena.originBuffer);
       pass.setIndexBuffer(this.terrainArena.indexBuffer, 'uint32');
-      for (let drawSlot = 0; drawSlot < terrainArenaDrawSlots; drawSlot++) {
+      for (let drawSlot = 0; drawSlot < terrainArenaReplaySlots; drawSlot++) {
         pass.drawIndexedIndirect(this.terrainArena.compactIndirectBuffer, drawSlot * INDIRECT_INDEXED_ARGS_BYTES);
         drawCalls++;
       }
@@ -3499,7 +3543,7 @@ export class Renderer {
       terrainClusters = gpuVisibleClusters;
       culledTerrainClusters = Math.max(0, activeClusters - gpuVisibleClusters);
       terrainTriangles = gpuVisibleClusters * TERRAIN_CLUSTER_INDEX_COUNT / 3;
-      terrainClusterDrawCalls = terrainArenaDrawSlots;
+      terrainClusterDrawCalls = terrainArenaReplaySlots;
       terrainClusterDrawsSkipped = culledTerrainClusters;
       visibleTerrainChunks = this.chunks.size;
       culledTerrainChunks = 0;

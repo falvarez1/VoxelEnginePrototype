@@ -68,6 +68,7 @@ import type {
   BrowserWorkerBenchmarkSummary,
   BrushShape,
   ChunkJob,
+  ChunkMessage,
   ChunkState,
   CaveGraphTileMessage,
   DensitySliceSnapshot,
@@ -120,6 +121,19 @@ type ChunkWorker = Worker & {
 };
 type RegionBrowserAction = 'load' | 'diff' | 'export' | 'inspect' | 'comparePayload' | 'verifyPayload' | 'clear' | 'refresh' | 'exportBundle' | 'importBundle' | 'exportMaintenanceReport' | 'pruneOldest' | 'dryRunRetention' | 'applyRetention';
 type RegionRetentionPolicyId = 'custom' | 'compact' | 'standard' | 'archive';
+
+interface ChunkCachePayload {
+  vertices: Uint8Array;
+  indices: Uint32Array;
+  densitySamples: Int16Array;
+  vegetation: Float32Array;
+  copiedBytes: number;
+}
+
+interface PendingChunkResult {
+  worker: ChunkWorker;
+  msg: ChunkMessage;
+}
 
 interface DensitySliceCapture extends DensitySliceSnapshot {
   capturedAt: number;
@@ -407,6 +421,12 @@ interface InputOptions {
   getBrushOptions?: () => BrushOptions;
 }
 
+interface MovementTestConfig {
+  keyCodes: string[];
+  delayMs: number;
+  durationMs: number;
+}
+
 interface BrushOptions {
   radius: number;
   distance: number;
@@ -506,6 +526,8 @@ const REGION_RETENTION_POLICIES: RegionRetentionPolicy[] = [
   { id: 'standard', label: 'Standard', maxSlots: REGION_SLOTS.length, maxMB: 256 },
   { id: 'archive', label: 'Archive', maxSlots: REGION_SLOTS.length, maxMB: 1024 },
 ];
+const MAX_CHUNK_RESULT_ADOPTIONS_PER_FRAME = 2;
+const MAX_CHUNK_RESULT_ADOPTION_MS_PER_FRAME = 4.0;
 const SHARED_GENERATE_BATCH_SIZE = 4;
 const SHARED_GENERATE_HEADER_INTS = 4;
 const SHARED_GENERATE_JOB_INTS = 8;
@@ -771,6 +793,7 @@ function readBooleanUrlOverride(...names: string[]): boolean | null {
 }
 
 function parseBooleanLike(value: string | null | undefined): boolean | null {
+  if (value === null || value === undefined) return null;
   const raw = String(value ?? '').trim().toLowerCase();
   if (raw === '' || raw === '1' || raw === 'true' || raw === 'yes' || raw === 'on') return true;
   if (raw === '0' || raw === 'false' || raw === 'no' || raw === 'off') return false;
@@ -783,6 +806,47 @@ function parseNumberLike(value: string | null | undefined): number | null {
   if (!raw) return null;
   const parsed = Number(raw);
   return Number.isFinite(parsed) ? parsed : null;
+}
+
+function readMovementTestConfigFromUrl(): MovementTestConfig | null {
+  const params = new URLSearchParams(window.location.search);
+  const raw = params.get('test.move') ?? params.get('moveTest') ?? params.get('autoMove');
+  if (!raw) return null;
+  const keyCodes: string[] = [];
+  const aliases: Record<string, string> = {
+    w: 'KeyW',
+    forward: 'KeyW',
+    fwd: 'KeyW',
+    s: 'KeyS',
+    back: 'KeyS',
+    backward: 'KeyS',
+    a: 'KeyA',
+    left: 'KeyA',
+    d: 'KeyD',
+    right: 'KeyD',
+    strafe: 'KeyD',
+    space: 'Space',
+    up: 'Space',
+    ascend: 'Space',
+    ctrl: 'ControlLeft',
+    control: 'ControlLeft',
+    down: 'ControlLeft',
+    descend: 'ControlLeft',
+    shift: 'ShiftLeft',
+    fast: 'ShiftLeft',
+    alt: 'AltLeft',
+    slow: 'AltLeft',
+  };
+  for (const token of raw.split(/[,+\s]+/)) {
+    const normalized = token.trim().toLowerCase();
+    if (!normalized || normalized === '0' || normalized === 'false' || normalized === 'off') continue;
+    const keyCode = aliases[normalized] ?? (token.startsWith('Key') || token === 'Space' ? token : '');
+    if (keyCode && !keyCodes.includes(keyCode)) keyCodes.push(keyCode);
+  }
+  if (keyCodes.length === 0) return null;
+  const durationMs = clampNumber(parseNumberLike(params.get('test.moveMs') ?? params.get('moveMs')) ?? 5000, 100, 120000, 5000);
+  const delayMs = clampNumber(parseNumberLike(params.get('test.moveDelayMs') ?? params.get('moveDelayMs')) ?? 3000, 0, 120000, 3000);
+  return { keyCodes, delayMs, durationMs };
 }
 
 function parseSettingValueForUrl(key: keyof EngineSettings, value: string): EngineSettings[keyof EngineSettings] | null {
@@ -1229,6 +1293,29 @@ function saveEngineSettings(settings: EngineSettings): void {
   } catch {
     // localStorage can be disabled in strict browser profiles.
   }
+}
+
+function cachePayloadForChunkMessage(msg: ChunkMessage): ChunkCachePayload {
+  if (!msg.stats?.sharedResultArena) {
+    return {
+      vertices: msg.vertices,
+      indices: msg.indices,
+      densitySamples: msg.densitySamples,
+      vegetation: msg.vegetation,
+      copiedBytes: 0,
+    };
+  }
+  const vertices = new Uint8Array(msg.vertices);
+  const indices = new Uint32Array(msg.indices);
+  const densitySamples = new Int16Array(msg.densitySamples);
+  const vegetation = new Float32Array(msg.vegetation);
+  return {
+    vertices,
+    indices,
+    densitySamples,
+    vegetation,
+    copiedBytes: vertices.byteLength + indices.byteLength + densitySamples.byteLength + vegetation.byteLength,
+  };
 }
 
 function sunDirectionFromSettings(settings: EngineSettings): [number, number, number] {
@@ -2399,6 +2486,7 @@ class ChunkStreamer {
   workers: ChunkWorker[] = [];
   idle: ChunkWorker[] = [];
   queue: ChunkJob[] = [];
+  pendingChunkResults: PendingChunkResult[] = [];
   states = new Map<string, ChunkState>();
   cache = new CompressedChunkCache(CHUNK_WORLD_SIZE);
   editLog: EditOperation[] = [];
@@ -2461,6 +2549,7 @@ class ChunkStreamer {
       sharedResultPages: 0,
       sharedResultChunks: 0,
       sharedResultBytes: 0,
+      sharedResultCacheCopyBytes: 0,
       savedRegionChunks: 0,
       loadedRegionChunks: 0,
       exportedRegionChunks: 0,
@@ -3123,6 +3212,7 @@ class ChunkStreamer {
   }
 
   update(camera: FlyCamera): void {
+    let adoptedThisFrame = this.processPendingChunkResults();
     if (!this.streamingEnabled) {
       this.effectiveStreamRadius = this.streamRadiusForCamera(camera);
       this.currentTargetChunks = 0;
@@ -3147,12 +3237,16 @@ class ChunkStreamer {
         }
       }
       if (!state && this.queue.length < MAX_QUEUE && enqueuedThisFrame < MAX_NEW_CHUNK_REQUESTS_PER_FRAME) {
-        const cached = this.cache.get(item.key);
-        if (cached) {
+        const canAdoptCachedChunk = adoptedThisFrame < MAX_CHUNK_RESULT_ADOPTIONS_PER_FRAME;
+        const cachedCandidate = this.cache.peek(item.key);
+        if (cachedCandidate) {
+          if (!canAdoptCachedChunk) continue;
+          const cached = this.cache.get(item.key) ?? cachedCandidate;
           const stats = { ...cached.stats, lodSeamMask: item.lodSeamMask ?? 0 };
           this.renderer.createChunkMesh(item.key, cached.vertices, cached.indices, cached.frame, cached.bounds, stats);
           if (cached.vegetation.length > 0) this.renderer.createVegetationPatch(item.key, cached.vegetation);
           this.states.set(item.key, 'loaded');
+          adoptedThisFrame++;
           continue;
         }
         this.queue.push({ ...item, version: this.version, editVersion: this.editVersion });
@@ -3368,6 +3462,24 @@ class ChunkStreamer {
     }
     if (msg.type !== 'chunk') return;
 
+    this.pendingChunkResults.push({ worker, msg });
+  }
+
+  private processPendingChunkResults(): number {
+    let adopted = 0;
+    const started = performance.now();
+    while (this.pendingChunkResults.length > 0) {
+      if (adopted >= MAX_CHUNK_RESULT_ADOPTIONS_PER_FRAME) break;
+      if (adopted > 0 && performance.now() - started >= MAX_CHUNK_RESULT_ADOPTION_MS_PER_FRAME) break;
+      const result = this.pendingChunkResults.shift();
+      if (!result) break;
+      this.completeChunkResult(result.worker, result.msg);
+      adopted++;
+    }
+    return adopted;
+  }
+
+  private completeChunkResult(worker: ChunkWorker, msg: ChunkMessage): void {
     if (msg.version !== this.version) {
       this.states.delete(msg.key);
       this.lastStats.discarded++;
@@ -3375,17 +3487,8 @@ class ChunkStreamer {
       return;
     }
 
-    if (msg.stats?.sharedResultArena) {
-      msg = {
-        ...msg,
-        vertices: new Uint8Array(msg.vertices),
-        indices: new Uint32Array(msg.indices),
-        densitySamples: new Int16Array(msg.densitySamples),
-        vegetation: new Float32Array(msg.vegetation),
-        stats: { ...msg.stats },
-      };
-      this.lastStats.sharedResultChunks++;
-    }
+    const sharedResult = msg.stats?.sharedResultArena === true;
+    if (sharedResult) this.lastStats.sharedResultChunks++;
 
     const uploadBytes = (msg.vertices?.byteLength || 0) + (msg.indices?.byteLength || 0) + (msg.vegetation?.byteLength || 0);
     if (msg.stats?.workerScratch) {
@@ -3403,7 +3506,22 @@ class ChunkStreamer {
 
     this.renderer.createChunkMesh(msg.key, msg.vertices, msg.indices, msg.frame, msg.bounds, msg.stats);
     if (msg.vegetation && msg.vegetation.length > 0) this.renderer.createVegetationPatch(msg.key, msg.vegetation);
-    this.cache.put(msg.key, msg.cx, msg.cy, msg.cz, msg.lod, msg.vertices, msg.indices, msg.densitySamples, msg.vegetation, msg.frame, msg.bounds, msg.stats);
+    const cachePayload = cachePayloadForChunkMessage(msg);
+    if (cachePayload.copiedBytes > 0) this.lastStats.sharedResultCacheCopyBytes += cachePayload.copiedBytes;
+    this.cache.put(
+      msg.key,
+      msg.cx,
+      msg.cy,
+      msg.cz,
+      msg.lod,
+      cachePayload.vertices,
+      cachePayload.indices,
+      cachePayload.densitySamples,
+      cachePayload.vegetation,
+      msg.frame,
+      msg.bounds,
+      msg.stats,
+    );
     this.refreshCacheStats();
     this.states.set(msg.key, 'loaded');
     this.completeWorkerJob(worker, msg.key);
@@ -3712,6 +3830,8 @@ class ChunkStreamer {
 
 function setupInput(canvas: HTMLCanvasElement, camera: FlyCamera, streamer: ChunkStreamer, options: InputOptions = {}): (dt: number) => void {
   const keys = new Set<string>();
+  const automatedKeys = new Set<string>();
+  const hasKey = (code: string): boolean => keys.has(code) || automatedKeys.has(code);
   const setStreamRadius = options.setStreamRadius ?? ((radius) => streamer.setStreamRadius(radius));
   const getBrushOptions = options.getBrushOptions ?? (() => ({
     radius: 9,
@@ -3762,6 +3882,18 @@ function setupInput(canvas: HTMLCanvasElement, camera: FlyCamera, streamer: Chun
   });
   window.addEventListener('keyup', (e) => keys.delete(e.code));
 
+  const movementTest = readMovementTestConfigFromUrl();
+  if (movementTest) {
+    window.setTimeout(() => {
+      for (const code of movementTest.keyCodes) automatedKeys.add(code);
+      console.info(`Movement test started: ${movementTest.keyCodes.join('+')} for ${movementTest.durationMs.toFixed(0)} ms`);
+      window.setTimeout(() => {
+        for (const code of movementTest.keyCodes) automatedKeys.delete(code);
+        console.info('Movement test stopped');
+      }, movementTest.durationMs);
+    }, movementTest.delayMs);
+  }
+
   canvas.addEventListener('click', () => canvas.requestPointerLock());
   window.addEventListener('mousemove', (e) => {
     if (document.pointerLockElement !== canvas) return;
@@ -3773,18 +3905,18 @@ function setupInput(canvas: HTMLCanvasElement, camera: FlyCamera, streamer: Chun
     const forward = camera.forward();
     const right = camera.right();
     let move = vec3(0, 0, 0);
-    if (keys.has('KeyW')) move = add(move, forward);
-    if (keys.has('KeyS')) move = add(move, scale(forward, -1));
-    if (keys.has('KeyD')) move = add(move, right);
-    if (keys.has('KeyA')) move = add(move, scale(right, -1));
-    if (keys.has('Space')) move = add(move, vec3(0, 1, 0));
-    if (keys.has('ControlLeft') || keys.has('ControlRight')) move = add(move, vec3(0, -1, 0));
+    if (hasKey('KeyW')) move = add(move, forward);
+    if (hasKey('KeyS')) move = add(move, scale(forward, -1));
+    if (hasKey('KeyD')) move = add(move, right);
+    if (hasKey('KeyA')) move = add(move, scale(right, -1));
+    if (hasKey('Space')) move = add(move, vec3(0, 1, 0));
+    if (hasKey('ControlLeft') || hasKey('ControlRight')) move = add(move, vec3(0, -1, 0));
     const len = Math.hypot(move[0], move[1], move[2]);
     if (len > 0.0001) {
       move = normalize(move);
       let speed = camera.speed;
-      if (keys.has('ShiftLeft') || keys.has('ShiftRight')) speed *= camera.fastMultiplier;
-      if (keys.has('AltLeft') || keys.has('AltRight')) speed *= camera.slowMultiplier;
+      if (hasKey('ShiftLeft') || hasKey('ShiftRight')) speed *= camera.fastMultiplier;
+      if (hasKey('AltLeft') || hasKey('AltRight')) speed *= camera.slowMultiplier;
       camera.position = add(camera.position, scale(move, speed * dt));
     }
   };
@@ -4729,7 +4861,7 @@ function updateOverlay(
   const regionSlot = regionSlotFromSettings(settings);
   const regionName = selectedRegionName ?? selectedRegionInfo?.name ?? regionSlot.name;
   const workerMode = caps.workerBufferMode === 'shared-queue'
-    ? `shared job/remesh/result pages + ${streamer.lastStats.sharedResultChunks} copied results`
+    ? `shared job/remesh/result pages + ${streamer.lastStats.sharedResultChunks} zero-copy renderer results`
     : caps.workerBufferMode === 'shared-ready'
       ? 'transferable, SAB ready'
       : 'transferable fallback';
@@ -4789,7 +4921,7 @@ function updateOverlay(
     Material fields: ${formatMaterialTileStats(worldgen.materialTileStats)}<br/>
     Cave graph: ${formatCaveGraphStats(worldgen.caveGraphStats)}<br/>
     Chunk cache: ${streamer.lastStats.cacheEntries} entries / ${streamer.lastStats.cacheMB.toFixed(1)} MB | Hits/misses: ${streamer.lastStats.cacheHits}/${streamer.lastStats.cacheMisses} | Array pool: ${streamer.lastStats.pooledArrays} / ${streamer.lastStats.pooledMB.toFixed(1)} MB, reuse ${streamer.lastStats.poolHits}/${streamer.lastStats.poolMisses}<br/>
-    Worker scratch: ${streamer.lastStats.workerScratchMB.toFixed(3)} MB arenas, reuse ${streamer.lastStats.workerScratchReuses} | Transfer alloc: ${streamer.lastStats.workerTransferMB.toFixed(1)} MB / ${streamer.lastStats.workerTransferAllocations} | Shared pages: ${streamer.lastStats.sharedQueuePages} job / ${streamer.lastStats.sharedRemeshPages} remesh / ${streamer.lastStats.sharedResultPages} result, ${sharedGenerateLine}; remesh/results ${streamer.lastStats.sharedRemeshDispatches}/${streamer.lastStats.sharedResultChunks}<br/>
+    Worker scratch: ${streamer.lastStats.workerScratchMB.toFixed(3)} MB arenas, reuse ${streamer.lastStats.workerScratchReuses} | Transfer alloc: ${streamer.lastStats.workerTransferMB.toFixed(1)} MB / ${streamer.lastStats.workerTransferAllocations} | Shared pages: ${streamer.lastStats.sharedQueuePages} job / ${streamer.lastStats.sharedRemeshPages} remesh / ${streamer.lastStats.sharedResultPages} result, ${sharedGenerateLine}; remesh/results ${streamer.lastStats.sharedRemeshDispatches}/${streamer.lastStats.sharedResultChunks}, cache copies ${(streamer.lastStats.sharedResultCacheCopyBytes / (1024 * 1024)).toFixed(1)} MB<br/>
     Region ${regionName} save/load/export/import: ${streamer.lastStats.savedRegionChunks}/${streamer.lastStats.loadedRegionChunks}/${streamer.lastStats.exportedRegionChunks}/${streamer.lastStats.importedRegionChunks} chunks | Slot: ${slotStatus}<br/>
     Region compression: ${compressionStatus}<br/>
     ${regionDiffLine ? `${regionDiffLine}<br/>` : ''}

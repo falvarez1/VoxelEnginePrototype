@@ -416,6 +416,7 @@ export interface StreamerStats {
   sharedResultPages: number;
   sharedResultChunks: number;
   sharedResultBytes: number;
+  sharedResultCacheCopyBytes: number;
   savedRegionChunks: number;
   loadedRegionChunks: number;
   exportedRegionChunks: number;

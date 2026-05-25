@@ -78,7 +78,6 @@ export class TypedArrayPool {
     const pool = this.pools[kind];
     const bucket = pool.get(array.length) ?? [];
     if (bucket.length >= this.maxArraysPerLength) return;
-    array.fill(0);
     bucket.push(array);
     pool.set(array.length, bucket);
     this.arrays++;
