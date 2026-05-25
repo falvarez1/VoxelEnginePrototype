@@ -559,6 +559,10 @@ const DEFAULT_ENGINE_SETTINGS: EngineSettings = {
   waterEnabled: true,
   vegetationEnabled: true,
   gameMarkersEnabled: false,
+  overlayPanelVisible: true,
+  settingsPanelVisible: true,
+  densityPanelVisible: true,
+  regionBrowserPanelVisible: true,
   qualityPreset: QUALITY_PRESET_BALANCED,
   fogDensity: 0.42,
   materialDetail: 0.68,
@@ -755,11 +759,6 @@ function readSavedEngineSettings(): Partial<EngineSettings> {
   }
 }
 
-function hasRadiusUrlOverride(): boolean {
-  const params = new URLSearchParams(window.location.search);
-  return params.has('radius') || params.has('r');
-}
-
 function readBooleanUrlOverride(...names: string[]): boolean | null {
   const params = new URLSearchParams(window.location.search);
   for (const name of names) {
@@ -769,6 +768,81 @@ function readBooleanUrlOverride(...names: string[]): boolean | null {
     if (raw === '0' || raw === 'false' || raw === 'no' || raw === 'off') return false;
   }
   return null;
+}
+
+function parseBooleanLike(value: string | null | undefined): boolean | null {
+  const raw = String(value ?? '').trim().toLowerCase();
+  if (raw === '' || raw === '1' || raw === 'true' || raw === 'yes' || raw === 'on') return true;
+  if (raw === '0' || raw === 'false' || raw === 'no' || raw === 'off') return false;
+  return null;
+}
+
+function parseNumberLike(value: string | null | undefined): number | null {
+  if (value === null || value === undefined) return null;
+  const raw = String(value).trim();
+  if (!raw) return null;
+  const parsed = Number(raw);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function parseSettingValueForUrl(key: keyof EngineSettings, value: string): EngineSettings[keyof EngineSettings] | null {
+  const fallback = DEFAULT_ENGINE_SETTINGS[key];
+  if (typeof fallback === 'boolean') return parseBooleanLike(value);
+  const parsed = parseNumberLike(value);
+  return parsed === null ? null : parsed;
+}
+
+function applyUrlSettingOverrides(settings: EngineSettings): EngineSettings {
+  const params = new URLSearchParams(window.location.search);
+  const next: Partial<EngineSettings> = { ...settings };
+  const settingKeys = new Set<keyof EngineSettings>(Object.keys(DEFAULT_ENGINE_SETTINGS) as Array<keyof EngineSettings>);
+
+  const applySetting = (key: string, value: string | null): void => {
+    if (!settingKeys.has(key as keyof EngineSettings) || value === null) return;
+    const parsed = parseSettingValueForUrl(key as keyof EngineSettings, value);
+    if (parsed !== null) {
+      (next as Record<string, unknown>)[key] = parsed;
+    }
+  };
+
+  for (const [key, value] of params.entries()) {
+    if (key.startsWith('set.')) applySetting(key.slice(4), value);
+    else if (key.startsWith('settings.')) applySetting(key.slice(9), value);
+  }
+
+  const radius = parseNumberLike(params.get('radius') ?? params.get('r'));
+  if (radius !== null) next.streamRadius = radius;
+  const lodOverride = readBooleanUrlOverride('lod', 'terrainLod', 'terrainLodEnabled');
+  if (lodOverride !== null) next.terrainLodEnabled = lodOverride;
+  return sanitizeEngineSettings(next);
+}
+
+function applyUrlCameraOverrides(camera: FlyCamera): void {
+  const params = new URLSearchParams(window.location.search);
+  const packed = params.get('camera') ?? params.get('cam');
+  if (packed) {
+    const values = packed.split(',').map(value => Number(value.trim()));
+    if (values.length >= 3 && values.slice(0, 3).every(Number.isFinite)) {
+      camera.position[0] = values[0];
+      camera.position[1] = values[1];
+      camera.position[2] = values[2];
+    }
+    if (Number.isFinite(values[3])) camera.yaw = values[3];
+    if (Number.isFinite(values[4])) camera.pitch = values[4];
+    if (Number.isFinite(values[5])) camera.fovDegrees = values[5];
+  }
+  const x = parseNumberLike(params.get('cameraX') ?? params.get('camX'));
+  const y = parseNumberLike(params.get('cameraY') ?? params.get('camY'));
+  const z = parseNumberLike(params.get('cameraZ') ?? params.get('camZ'));
+  if (x !== null) camera.position[0] = x;
+  if (y !== null) camera.position[1] = y;
+  if (z !== null) camera.position[2] = z;
+  const yaw = parseNumberLike(params.get('cameraYaw') ?? params.get('yaw'));
+  const pitch = parseNumberLike(params.get('cameraPitch') ?? params.get('pitch'));
+  const fov = parseNumberLike(params.get('cameraFov') ?? params.get('fov'));
+  if (yaw !== null) camera.yaw = yaw;
+  if (pitch !== null) camera.pitch = pitch;
+  if (fov !== null) camera.fovDegrees = fov;
 }
 
 function sanitizeEngineSettings(raw: Partial<EngineSettings> = {}): EngineSettings {
@@ -800,6 +874,10 @@ function sanitizeEngineSettings(raw: Partial<EngineSettings> = {}): EngineSettin
     waterEnabled: raw.waterEnabled !== false,
     vegetationEnabled: raw.vegetationEnabled !== false,
     gameMarkersEnabled: raw.gameMarkersEnabled === true,
+    overlayPanelVisible: raw.overlayPanelVisible !== false,
+    settingsPanelVisible: raw.settingsPanelVisible !== false,
+    densityPanelVisible: raw.densityPanelVisible !== false,
+    regionBrowserPanelVisible: raw.regionBrowserPanelVisible !== false,
     qualityPreset: clampInt(raw.qualityPreset ?? DEFAULT_ENGINE_SETTINGS.qualityPreset, QUALITY_PRESET_LOW, QUALITY_PRESET_AUTO),
     fogDensity: clampNumber(migratedFogDensity, 0, 2.2, DEFAULT_ENGINE_SETTINGS.fogDensity),
     materialDetail: clampNumber(migratedMaterialDetail, 0, 1.8, DEFAULT_ENGINE_SETTINGS.materialDetail),
@@ -1141,11 +1219,7 @@ function runBrowserWorkerBenchmark(): Promise<BrowserWorkerBenchmarkSummary> {
 
 function loadEngineSettings(): EngineSettings {
   const saved = readSavedEngineSettings();
-  const settings = sanitizeEngineSettings({ ...DEFAULT_ENGINE_SETTINGS, ...saved });
-  if (hasRadiusUrlOverride()) settings.streamRadius = DEFAULT_STREAM_RADIUS;
-  const lodOverride = readBooleanUrlOverride('lod', 'terrainLod', 'terrainLodEnabled');
-  if (lodOverride !== null) settings.terrainLodEnabled = lodOverride;
-  return settings;
+  return applyUrlSettingOverrides(sanitizeEngineSettings({ ...DEFAULT_ENGINE_SETTINGS, ...saved }));
 }
 
 function saveEngineSettings(settings: EngineSettings): void {
@@ -1191,6 +1265,19 @@ function applyEngineSettings(settings: EngineSettings, camera: FlyCamera, render
     animationSpeed: settings.animationSpeed,
     sunDirection: sunDirectionFromSettings(settings),
   });
+}
+
+function applyPanelVisibility(
+  settings: EngineSettings,
+  overlay: HTMLElement,
+  settingsRoot: HTMLElement,
+  densityPanel: HTMLElement,
+  regionBrowser: HTMLElement,
+): void {
+  overlay.hidden = !settings.overlayPanelVisible;
+  settingsRoot.hidden = !settings.settingsPanelVisible;
+  if (!settings.densityPanelVisible) densityPanel.hidden = true;
+  if (!settings.regionBrowserPanelVisible) regionBrowser.hidden = true;
 }
 
 function brushTypeFromMode(mode: number): EditOperation['type'] {
@@ -4685,8 +4772,8 @@ function updateOverlay(
     : '';
   el.innerHTML = `
     <b>Storm Canyon Voxel Prototype</b><br/>
-    FPS: ${fps.toFixed(0)} | Frame: ${profile.avgFrameMs.toFixed(1)} ms avg | Draws: ${rstats.drawCalls} | SDF tris: ${(rstats.terrainTriangles / 1000).toFixed(0)}k | Clusters: ${rstats.terrainClusters}/${rstats.culledTerrainClusters} visible/culled | Cluster batches: ${rstats.terrainClusterDrawCalls} draws, ${rstats.terrainClusterDrawsSkipped} frustum-culled clusters | Far tris: ${((rstats.farTerrainTriangles ?? 0) / 1000).toFixed(0)}k<br/>
-    Render radius: ${streamer.baseStreamRadius}/${MAX_STREAM_RADIUS} base / ${streamer.effectiveStreamRadius} effective (${(streamer.effectiveStreamRadius * CHUNK_WORLD_SIZE).toFixed(0)}m) | LOD rings: ${streamer.terrainLodEnabled ? 'on' : 'off'} | Far vista: 4.6km clipmap | Target chunks: ${streamer.currentTargetChunks} | Hi-Z range occlusion: ${rstats.hiZOcclusionCulledBatches}/${rstats.hiZOcclusionTestedBatches} batches<br/>
+    FPS: ${fps.toFixed(0)} | Frame: ${profile.avgFrameMs.toFixed(1)} ms avg | Draws: ${rstats.drawCalls} | SDF tris: ${(rstats.terrainTriangles / 1000).toFixed(0)}k | Clusters: ${rstats.terrainClusters}/${rstats.culledTerrainClusters} GPU visible/culled | Terrain arena: ${rstats.terrainClusterDrawCalls} indirect slots, ${rstats.terrainClusterDrawsSkipped} compacted-away clusters | Far tris: ${((rstats.farTerrainTriangles ?? 0) / 1000).toFixed(0)}k<br/>
+    Render radius: ${streamer.baseStreamRadius}/${MAX_STREAM_RADIUS} base / ${streamer.effectiveStreamRadius} effective (${(streamer.effectiveStreamRadius * CHUNK_WORLD_SIZE).toFixed(0)}m) | LOD rings: ${streamer.terrainLodEnabled ? 'on' : 'off'} | Far vista: 4.6km clipmap | Target chunks: ${streamer.currentTargetChunks} | GPU terrain cull/Hi-Z: ${rstats.hiZOcclusionCulledBatches}/${rstats.hiZOcclusionTestedBatches} occluded/visible clusters<br/>
     LOD plan: ${streamer.lastStats.lodPlanTargetChunks} targets (0/1/2+: ${streamer.lastStats.lodPlanLod0Chunks}/${streamer.lastStats.lodPlanLod1Chunks}/${streamer.lastStats.lodPlanLod2PlusChunks}) | covered cells ${streamer.lastStats.lodPlanCoveredBaseCells} | transition faces ${streamer.lastStats.lodPlanTransitionFaces}/${streamer.lastStats.lodPlanTransitionEdges} on ${streamer.lastStats.lodPlanSkirtedChunks} chunks, ${streamer.lastStats.lodPlanTransitionCells} cells (${streamer.lastStats.lodPlanTransitionFaceBaseCells} face cells) | runtime mesh ${streamer.lastStats.lodTransitionMeshNative ? 'native' : 'TS'} ${streamer.lastStats.lodTransitionMeshEmittedCells}/${streamer.lastStats.lodTransitionMeshCells} cells, ${streamer.lastStats.lodTransitionMeshTriangles} tris, missing ${streamer.lastStats.lodTransitionMeshMissingSampleCells} | max LOD ${streamer.lastStats.lodPlanMaxLod}<br/>
     Survey beacons: ${game.collected}/${game.total} | Biomes: ${game.collectedBiomes.length}/${game.totalBiomes} ${nextSurvey} | Field contracts: ${game.completedContracts}/${game.totalContracts} ${nextContract}<br/>
     Route flags: ${game.visitedCheckpoints}/${game.totalCheckpoints} ${nextCheckpoint} | Hazards: ${game.clearedHazards}/${game.totalHazards} ${nextHazard}${activeHazard}<br/>
@@ -4998,6 +5085,82 @@ function createQualityRuntimeCapture(
   };
 }
 
+interface AutomationConfig {
+  enabled: boolean;
+  label: string;
+  actions: string[];
+  targets: Set<'console' | 'backend' | 'window'>;
+  waitFrames: number;
+  intervalFrames: number;
+  maxRuns: number;
+  includeScreenshot: boolean;
+  endpoint: string;
+}
+
+interface AutomationEnvelope {
+  type: 'storm-canyon-automation-report';
+  version: 1;
+  id: string;
+  label: string;
+  action: string;
+  sequence: number;
+  frame: number;
+  capturedAt: number;
+  location: string;
+  payload: unknown;
+}
+
+function automationListParam(params: URLSearchParams, ...names: string[]): string[] {
+  const values: string[] = [];
+  for (const name of names) {
+    for (const value of params.getAll(name)) {
+      values.push(...value.split(/[;,]/g).map(item => item.trim()).filter(Boolean));
+    }
+  }
+  return values;
+}
+
+function readAutomationConfig(): AutomationConfig {
+  const params = new URLSearchParams(window.location.search);
+  const explicit = parseBooleanLike(params.get('automation') ?? params.get('auto'));
+  const actions = automationListParam(params, 'automation.actions', 'automationActions', 'auto.actions', 'autoActions', 'auto.action', 'autoAction');
+  const autoValue = params.get('auto');
+  if (autoValue && explicit === null) {
+    actions.push(...autoValue.split(/[;,]/g).map(item => item.trim()).filter(item => item && !['1', 'true', 'yes', 'on'].includes(item.toLowerCase())));
+  }
+  const targets = new Set<'console' | 'backend' | 'window'>();
+  const targetValues = automationListParam(params, 'automation.target', 'automationTarget', 'auto.target', 'autoTarget', 'reportTarget');
+  for (const target of targetValues) {
+    const normalized = target.toLowerCase();
+    if (normalized === 'console') targets.add('console');
+    if (normalized === 'backend' || normalized === 'server') targets.add('backend');
+    if (normalized === 'window' || normalized === 'global') targets.add('window');
+  }
+  if (targets.size === 0) targets.add('console');
+  const backendOverride = parseBooleanLike(params.get('automation.backend') ?? params.get('autoBackend'));
+  const windowOverride = parseBooleanLike(params.get('automation.window') ?? params.get('autoWindow'));
+  if (backendOverride === true) targets.add('backend');
+  if (parseBooleanLike(params.get('automation.console') ?? params.get('autoConsole')) === false) targets.delete('console');
+  if (windowOverride === true) targets.add('window');
+  const intervalFrames = clampInt(
+    parseNumberLike(params.get('automation.everyFrames') ?? params.get('autoEveryFrames') ?? params.get('autoEvery')) ?? 0,
+    0,
+    36000,
+  );
+  const maxRunsOverride = parseNumberLike(params.get('automation.runs') ?? params.get('autoRuns') ?? params.get('autoReports'));
+  return {
+    enabled: explicit === false ? false : explicit === true || actions.length > 0 || targetValues.length > 0 || backendOverride === true || windowOverride === true,
+    label: params.get('automation.label') ?? params.get('autoLabel') ?? 'url-automation',
+    actions: actions.length > 0 ? actions : ['state'],
+    targets,
+    waitFrames: clampInt(parseNumberLike(params.get('automation.waitFrames') ?? params.get('autoWaitFrames') ?? params.get('autoWait')) ?? 90, 0, 36000),
+    intervalFrames,
+    maxRuns: clampInt(maxRunsOverride ?? (intervalFrames > 0 ? 1000000 : 1), 1, 1000000),
+    includeScreenshot: parseBooleanLike(params.get('automation.screenshot') ?? params.get('autoScreenshot')) === true,
+    endpoint: params.get('automation.endpoint') ?? params.get('autoEndpoint') ?? '/__storm/automation-report',
+  };
+}
+
 async function main() {
   const canvas = document.querySelector<HTMLCanvasElement>('#gfx');
   const overlay = document.querySelector<HTMLElement>('#overlay');
@@ -5022,9 +5185,10 @@ async function main() {
   const regionStore = new RegionStore();
   if (settings.qualityPreset === QUALITY_PRESET_AUTO) {
     settings = sanitizeEngineSettings(applyQualityPreset(settings, renderer.capabilities));
-    if (hasRadiusUrlOverride()) settings.streamRadius = DEFAULT_STREAM_RADIUS;
+    settings = applyUrlSettingOverrides(settings);
   }
   applyEngineSettings(settings, camera, renderer, streamer);
+  applyUrlCameraOverrides(camera);
   const game = new StormCanyonGame();
   const emptyGameMarkers = new Float32Array(0);
   const initialMarkers = settings.gameMarkersEnabled ? game.consumeMarkerInstances(true) : null;
@@ -5056,6 +5220,10 @@ async function main() {
   let pendingRegionImport: RegionImportPreview | null = null;
   let regionSlotInfos: RegionSlotInfo[] = [];
   let settingsPanel: SettingsPanel | null = null;
+  const automation = readAutomationConfig();
+  let automationFrame = 0;
+  let automationRuns = 0;
+  let automationRunning = false;
   let handleRegionBrowserAction = (action: RegionBrowserAction, index: number): void => {
     void action;
     settingsPanel?.setValue('regionSlot', index);
@@ -5096,6 +5264,7 @@ async function main() {
       (index) => settingsPanel?.setValue('regionSlot', index),
       (action, index) => handleRegionBrowserAction(action, index),
     );
+    if (!settings.regionBrowserPanelVisible) regionBrowser.hidden = true;
   };
 
   const refreshRegionSlots = async () => {
@@ -5183,7 +5352,8 @@ async function main() {
     saveEngineSettings(settings);
     if (changedKey === 'gameMarkersEnabled' || changedKey === 'all') refreshGameMarkers(true);
     if (changedKey === 'all') settingsPanel?.setSettings(settings);
-    if (changedKey === 'regionSlot' || changedKey === 'all') updateRegionBrowser();
+    if (changedKey === 'regionSlot' || changedKey === 'regionBrowserPanelVisible' || changedKey === 'all') updateRegionBrowser();
+    applyPanelVisibility(settings, overlay, settingsRoot, densityPanel, regionBrowser);
     updateBrushPresetPanel();
   };
   const currentBrushOptions = (): BrushOptions => ({
@@ -5932,25 +6102,25 @@ async function main() {
     }
   };
 
-  const exportDiagnosticCapture = async () => {
+  const createDiagnosticCapture = async (includeScreenshot = true) => {
     const capturedAt = Date.now();
     const currentSlice = streamer.densitySliceForCamera(camera, settings);
     const selectedCapture = selectedDensityCapture(densityCaptureLibrary);
     densitySliceDiff = compareDensitySlices(currentSlice, selectedCapture);
     const slot = currentRegionSlot();
     const regionInfo = regionSlotInfos.find(info => info.key === slot.key) ?? null;
-    const screenshotDataUrl = await canvasPngDataUrl(canvas);
+    const screenshotDataUrl = includeScreenshot ? await canvasPngDataUrl(canvas) : null;
     const worldgen = worldgenSnapshot(camera, settings);
-    const body = {
+    return {
       type: 'storm-canyon-diagnostic-capture',
       version: 2,
       capturedAt,
-      screenshot: {
+      screenshot: screenshotDataUrl ? {
         mimeType: 'image/png',
         width: canvas.width,
         height: canvas.height,
         dataUrl: screenshotDataUrl,
-      },
+      } : null,
       camera: {
         position: [...camera.position],
         yaw: camera.yaw,
@@ -5995,12 +6165,15 @@ async function main() {
       gameProgress: game.progress(),
       overlayText: overlay.innerText,
     };
-    const blob = new Blob([JSON.stringify(body, null, 2)], { type: 'application/json' });
-    downloadBlob(blob, diagnosticFileName(capturedAt));
   };
-  const exportQualityCapture = () => {
-    const capture = recordQualityCapture('manual-export');
-    const body = {
+  const exportDiagnosticCapture = async () => {
+    const body = await createDiagnosticCapture(true);
+    const blob = new Blob([JSON.stringify(body, null, 2)], { type: 'application/json' });
+    downloadBlob(blob, diagnosticFileName(body.capturedAt));
+  };
+  const createQualityCaptureBody = (label = 'manual-export') => {
+    const capture = recordQualityCapture(label);
+    return {
       type: 'storm-canyon-quality-capture',
       version: 2,
       exportedAt: Date.now(),
@@ -6008,14 +6181,17 @@ async function main() {
       recentCaptures: autoQualityState.captures,
       browserWorkerBenchmarks: browserWorkerBenchmarkCaptures,
     };
-    downloadBlob(new Blob([JSON.stringify(body, null, 2)], { type: 'application/json' }), qualityCaptureFileName(capture.capturedAt));
   };
-  const exportWorldgenTiles = () => {
+  const exportQualityCapture = () => {
+    const body = createQualityCaptureBody('manual-export');
+    downloadBlob(new Blob([JSON.stringify(body, null, 2)], { type: 'application/json' }), qualityCaptureFileName(body.capture.capturedAt));
+  };
+  const createWorldgenTileCapture = () => {
     const tiles = worldgenTileCache.exportTilesAround(camera.position[0], camera.position[2], 1);
     const caveGraph = caveGraphTileCache.exportTilesAround(camera.position[0], camera.position[2], 1);
     const erosionTiles = erosionTileCache.exportTilesAround(camera.position[0], camera.position[2], 1);
     const materialTiles = materialTileCache.exportTilesAround(camera.position[0], camera.position[2], 1);
-    const body = {
+    return {
       ...tiles,
       erosionTiles,
       materialTiles,
@@ -6028,7 +6204,212 @@ async function main() {
       },
       probes: worldgenSnapshot(camera, settings),
     };
-    downloadBlob(new Blob([JSON.stringify(body, null, 2)], { type: 'application/json' }), worldgenTileFileName(tiles.capturedAt));
+  };
+  const exportWorldgenTiles = () => {
+    const body = createWorldgenTileCapture();
+    downloadBlob(new Blob([JSON.stringify(body, null, 2)], { type: 'application/json' }), worldgenTileFileName(body.capturedAt));
+  };
+
+  const createAutomationStateCapture = () => {
+    const slot = currentRegionSlot();
+    const regionInfo = regionSlotInfos.find(info => info.key === slot.key) ?? null;
+    const selectedCapture = selectedDensityCapture(densityCaptureLibrary);
+    return {
+      type: 'storm-canyon-runtime-state',
+      version: 1,
+      capturedAt: Date.now(),
+      frame: automationFrame,
+      camera: {
+        position: [...camera.position],
+        yaw: camera.yaw,
+        pitch: camera.pitch,
+        fovDegrees: camera.fovDegrees,
+      },
+      settings: { ...settings },
+      panels: {
+        overlay: settings.overlayPanelVisible && !overlay.hidden,
+        settings: settings.settingsPanelVisible && !settingsRoot.hidden,
+        density: settings.densityPanelVisible && !densityPanel.hidden,
+        regionBrowser: settings.regionBrowserPanelVisible && !regionBrowser.hidden,
+      },
+      runtime: {
+        capabilities: { ...renderer.capabilities },
+        rendererStats: { ...renderer.stats },
+        rendererMemory: renderer.memoryStats(),
+        profile: { ...profiler.last },
+        streamerCounts: streamer.counts(),
+        streamerStats: { ...streamer.lastStats },
+        autoQuality: serializeAutoQualityState(autoQualityState),
+        browserWorkerBenchmarks: browserWorkerBenchmarkCaptures,
+        regionDiff: streamer.lastRegionDiff ? { ...streamer.lastRegionDiff } : null,
+      },
+      region: {
+        activeSlot: { key: slot.key, name: slot.name },
+        selectedSlotInfo: regionInfo,
+        slotCount: regionSlotInfos.length,
+        pendingImport: pendingRegionImport ? {
+          fileName: pendingRegionImport.fileName,
+          fileSize: pendingRegionImport.fileSize,
+          decodedAt: pendingRegionImport.decodedAt,
+          diff: pendingRegionImport.diff,
+        } : null,
+      },
+      density: {
+        selectedCapture: selectedCapture ? serializeDensityCapture(selectedCapture) : null,
+        selectedSet: {
+          name: selectedDensitySet(densityCaptureLibrary).name,
+          index: densityCaptureLibrary.selectedSetIndex,
+          count: selectedDensitySet(densityCaptureLibrary).captures.length,
+        },
+        diff: densitySliceDiff,
+      },
+      worldgen: worldgenSnapshot(camera, settings),
+      game: game.snapshot(camera),
+      gameProgress: game.progress(),
+      overlayText: overlay.innerText,
+    };
+  };
+
+  const emitAutomationReport = async (action: string, payload: unknown): Promise<AutomationEnvelope> => {
+    const envelope: AutomationEnvelope = {
+      type: 'storm-canyon-automation-report',
+      version: 1,
+      id: `automation-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
+      label: automation.label,
+      action,
+      sequence: automationRuns + 1,
+      frame: automationFrame,
+      capturedAt: Date.now(),
+      location: window.location.href,
+      payload,
+    };
+    const automationWindow = window as unknown as {
+      __stormCanyonAutomationLatest?: AutomationEnvelope;
+      __stormCanyonAutomationReports?: AutomationEnvelope[];
+    };
+    automationWindow.__stormCanyonAutomationLatest = envelope;
+    if (automation.targets.has('window')) {
+      automationWindow.__stormCanyonAutomationReports = [
+        ...(automationWindow.__stormCanyonAutomationReports ?? []),
+        envelope,
+      ].slice(-50);
+    }
+    if (automation.targets.has('console')) {
+      console.log(`STORM_CANYON_AUTOMATION ${JSON.stringify(envelope)}`);
+    }
+    if (automation.targets.has('backend')) {
+      try {
+        const body = JSON.stringify(envelope);
+        const response = await fetch(automation.endpoint, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body,
+          keepalive: body.length < 64000,
+        });
+        if (!response.ok) console.warn(`Automation report POST failed with HTTP ${response.status}.`);
+      } catch (error) {
+        console.warn('Automation report POST failed.', error);
+      }
+    }
+    return envelope;
+  };
+
+  const emitAutomationStateAfterAction = async (action: string, result: unknown = null): Promise<void> => {
+    await emitAutomationReport(action, {
+      type: 'storm-canyon-automation-action-result',
+      version: 1,
+      action,
+      result,
+      state: createAutomationStateCapture(),
+    });
+  };
+
+  const runAutomationAction = async (action: string): Promise<void> => {
+    const normalized = action.trim().toLowerCase().replace(/[-_\s]/g, '');
+    try {
+      if (normalized === 'state' || normalized === 'report' || normalized === 'runtime') {
+        await emitAutomationReport(action, createAutomationStateCapture());
+      } else if (normalized === 'diagnostic' || normalized === 'diagnosticcapture') {
+        await emitAutomationReport(action, await createDiagnosticCapture(automation.includeScreenshot));
+      } else if (normalized === 'quality' || normalized === 'qualitycapture') {
+        await emitAutomationReport(action, createQualityCaptureBody(`automation-${automation.label}`));
+      } else if (normalized === 'worldgen' || normalized === 'worldgentiles' || normalized === 'worldgentilecapture') {
+        await emitAutomationReport(action, createWorldgenTileCapture());
+      } else if (normalized === 'benchmark' || normalized === 'workerbenchmark' || normalized === 'runworkerbenchmark') {
+        await captureBrowserWorkerBenchmark();
+        await emitAutomationStateAfterAction(action, { completed: true });
+      } else if (normalized === 'reload' || normalized === 'reloadchunks') {
+        streamer.reloadChunks();
+        await emitAutomationStateAfterAction(action, { completed: true });
+      } else if (normalized === 'carve') {
+        carveAtCrosshair();
+        await emitAutomationStateAfterAction(action, { completed: true });
+      } else if (normalized === 'capturedensity' || normalized === 'capturedensityslice' || normalized === 'density') {
+        captureDensitySlice();
+        await emitAutomationStateAfterAction(action, { completed: true });
+      } else if (normalized === 'diffdensity' || normalized === 'diffdensityslice' || normalized === 'densitydiff') {
+        diffDensitySlice();
+        await emitAutomationStateAfterAction(action, { completed: true });
+      } else if (normalized === 'saveregion') {
+        await saveRegion();
+        await emitAutomationStateAfterAction(action, { completed: true });
+      } else if (normalized === 'loadregion') {
+        await loadRegion();
+        await emitAutomationStateAfterAction(action, { completed: true });
+      } else if (normalized === 'diffregion') {
+        await diffSavedRegion();
+        await emitAutomationStateAfterAction(action, { completed: true });
+      } else if (normalized === 'resetgame' || normalized === 'resetgameprogress') {
+        game.resetProgress();
+        refreshGameMarkers();
+        await emitAutomationStateAfterAction(action, { completed: true });
+      } else {
+        await emitAutomationReport(action, {
+          type: 'storm-canyon-automation-error',
+          version: 1,
+          action,
+          message: `Unknown automation action: ${action}`,
+          supportedActions: [
+            'state',
+            'diagnostic',
+            'quality',
+            'worldgen',
+            'benchmark',
+            'reloadChunks',
+            'carve',
+            'captureDensity',
+            'diffDensity',
+            'saveRegion',
+            'loadRegion',
+            'diffRegion',
+            'resetGame',
+          ],
+        });
+      }
+    } catch (error) {
+      await emitAutomationReport(action, {
+        type: 'storm-canyon-automation-error',
+        version: 1,
+        action,
+        message: error instanceof Error ? error.message : String(error),
+        stack: error instanceof Error ? error.stack : undefined,
+      });
+    }
+  };
+
+  const pumpAutomation = (): void => {
+    if (!automation.enabled || automationRunning || automationRuns >= automation.maxRuns) return;
+    if (automationFrame < automation.waitFrames) return;
+    if (automationRuns > 0 && automation.intervalFrames <= 0) return;
+    if (automationRuns > 0 && (automationFrame - automation.waitFrames) % automation.intervalFrames !== 0) return;
+    automationRunning = true;
+    const actions = [...automation.actions];
+    void (async () => {
+      for (const action of actions) await runAutomationAction(action);
+    })().finally(() => {
+      automationRuns++;
+      automationRunning = false;
+    });
   };
 
   handleRegionBrowserAction = (action, index) => {
@@ -6133,6 +6514,7 @@ async function main() {
   updateRegionBrowser();
   updateBrushPresetPanel();
   updateEditHistoryPanel();
+  applyPanelVisibility(settings, overlay, settingsRoot, densityPanel, regionBrowser);
 
   const updateCamera = setupInput(canvas, camera, streamer, {
     getBrushOptions: currentBrushOptions,
@@ -6142,6 +6524,7 @@ async function main() {
   let last = performance.now();
   let fps = 60;
   function frame(now: number): void {
+    automationFrame++;
     const dt = Math.min(0.05, (now - last) / 1000);
     last = now;
     fps = fps * 0.92 + (1 / Math.max(dt, 0.0001)) * 0.08;
@@ -6170,7 +6553,7 @@ async function main() {
     renderDensityPanel(
       densityPanel,
       settings.debugView === DEBUG_VIEW_DENSITY_SLICE ? streamer.densitySliceForCamera(camera, settings) : null,
-      settings.debugView === DEBUG_VIEW_DENSITY_SLICE,
+      settings.densityPanelVisible && settings.debugView === DEBUG_VIEW_DENSITY_SLICE,
       densityCaptureLibrary,
       densitySliceDiff,
     );
@@ -6196,6 +6579,8 @@ async function main() {
       browserWorkerBenchmarkCaptures,
       browserWorkerBenchmarkRunning,
     );
+    applyPanelVisibility(settings, overlay, settingsRoot, densityPanel, regionBrowser);
+    pumpAutomation();
     requestAnimationFrame(frame);
   }
   requestAnimationFrame(frame);

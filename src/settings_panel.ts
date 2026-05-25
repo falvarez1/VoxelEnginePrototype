@@ -238,6 +238,15 @@ const GROUPS: SettingGroup[] = [
     ],
   },
   {
+    title: 'UI Panels',
+    items: [
+      { key: 'overlayPanelVisible', label: 'Stats overlay', type: 'toggle' },
+      { key: 'settingsPanelVisible', label: 'Settings panel', type: 'toggle' },
+      { key: 'densityPanelVisible', label: 'Density panel', type: 'toggle' },
+      { key: 'regionBrowserPanelVisible', label: 'Region browser', type: 'toggle' },
+    ],
+  },
+  {
     title: 'Camera',
     items: [
       { key: 'cameraSpeed', label: 'Move speed', type: 'range', min: 8, max: 150, step: 1, suffix: ' m/s' },

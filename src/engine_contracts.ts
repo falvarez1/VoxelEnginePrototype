@@ -254,6 +254,10 @@ export interface EngineSettings {
   waterEnabled: boolean;
   vegetationEnabled: boolean;
   gameMarkersEnabled: boolean;
+  overlayPanelVisible: boolean;
+  settingsPanelVisible: boolean;
+  densityPanelVisible: boolean;
+  regionBrowserPanelVisible: boolean;
   qualityPreset: number;
   fogDensity: number;
   materialDetail: number;

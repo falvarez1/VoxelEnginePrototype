@@ -23,6 +23,7 @@ Implemented:
 - GPU Hi-Z depth-pyramid generation from the `depth32float` main depth buffer after the render pass, with conservative previous-frame terrain range-batch occlusion tests plus mip-count, memory, tested-batch, and culled-batch telemetry in the runtime overlay and quality captures.
 - Batched vegetation draw submission: worker-generated patch instances are retained by patch, CPU-frustum-culled, distance-LOD-filtered for shrubs and small pines, packed into one visible-instance GPU buffer per frame, and reported through visible/culled patch, rendered-instance, instance-LOD-cull, and batch-draw telemetry.
 - Runtime terrain debug views for normals, material IDs, packed material masks, individual biome/wetness/snow mask channels, AO, chunk ID coloring, configurable cached density slices, named density-slice capture sets with JSON import/export, numeric diff telemetry, diff heatmaps, live camera/brush worldgen, cave-distance, and cave-graph probes, worldgen and cave-graph tile-cache telemetry, optional distance-aware live brush-preview markers, and dirty edit-region markers.
+- Query-string automation for validation and debugging: sanitized settings overrides, camera placement, action execution, console/window/backend report targets, backend report files under `output/automation/`, and settings-panel toggles for hiding the stats overlay, settings panel, density panel, and region browser.
 - Scriptable density-capture regression comparison for exported slice JSON, with thresholded mean/max/changed-cell checks.
 - Scriptable visual-regression screenshot metrics, compact perceptual signatures, compressed full-resolution luma perceptual fields, full-resolution luma SSIM/block-SSIM checks, and diff heatmaps for reference-view PNGs, with update/compare modes and a JSON baseline in `docs/visual-quality-baseline.json`.
 - Browser-driven multi-viewport visual capture/comparison through `npm run visual:capture`, covering `1920x1080`, `1680x945`, and `390x844` baselines, with compare-mode JSON/HTML reports, signature preview/diff PNG artifacts, and full-resolution luma diff heatmaps under `output/playwright/visual-reports/`.
@@ -137,3 +138,7 @@ Implemented:
 ## Follow-on graphics track
 
 After the core roadmap above is complete, continue with `docs/plans/visual-quality-pipeline-plan.md`. The first renderer-only visual slice is now in place and aligned with that plan, but it is not equivalent to the supplied reference image; deeper graphics work should build on stable meshing, streaming, persistence, performance budgets, debug tooling, worldgen/cave data contracts, and prototype-game requirements instead of competing with them.
+
+## Post-core massive-agent track
+
+After the core roadmap, WebGPU performance work, Rust production core, editor hardening, and visual-readiness foundations are complete, continue with `docs/MASS_AGENT_ROADMAP.md` for million-scale lightweight autonomous agents. That track uses ECS ideas, but keeps hot-path agents in paged SoA buffers and GPU/worker-friendly storage rather than turning every lightweight agent into a high-overhead JavaScript entity.
