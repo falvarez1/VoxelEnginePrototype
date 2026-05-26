@@ -2701,6 +2701,12 @@ class ChunkStreamer {
       sharedResultCacheCopyBytes: 0,
       sharedResultCacheBorrowedChunks: 0,
       sharedResultCacheBorrowedBytes: 0,
+      sharedResultSlotCapacity: 0,
+      sharedResultSlotOccupied: 0,
+      sharedResultSlotExhaustions: 0,
+      sharedResultSlotReleases: 0,
+      remeshFallbackDispatches: 0,
+      remeshFallbackBytes: 0,
       savedRegionChunks: 0,
       loadedRegionChunks: 0,
       exportedRegionChunks: 0,
@@ -2791,6 +2797,7 @@ class ChunkStreamer {
     this.lastStats.sharedRemeshBytes = this.lastStats.sharedRemeshPages * SHARED_REMESH_DENSITY_SAMPLES * Int16Array.BYTES_PER_ELEMENT;
     this.lastStats.sharedResultPages = this.workers.filter(worker => worker.sharedResultArena).length;
     this.lastStats.sharedResultBytes = this.lastStats.sharedResultPages * SHARED_RESULT_ARENA_BYTES;
+    this.lastStats.sharedResultSlotCapacity = this.lastStats.sharedResultPages * SHARED_RESULT_SLOT_COUNT;
     if (this.lastStats.sharedQueuePages > 0) this.renderer.capabilities.workerBufferMode = 'shared-queue';
     this.syncEditLog();
   }
@@ -3505,10 +3512,7 @@ class ChunkStreamer {
         if (worker.sharedRemeshPage && job.densitySamples.length <= worker.sharedRemeshPage.densitySamples.length) {
           this.dispatchSharedRemesh(worker, job);
         } else {
-          worker.postMessage(
-            { type: 'remeshDensity', ...job, densitySamples: job.densitySamples, editsToApply: job.editsToApply },
-            [job.densitySamples.buffer] as Transferable[],
-          );
+          this.dispatchFallbackRemesh(worker, job, job.densitySamples, job.editsToApply);
         }
       } else if (worker.sharedGenerateQueue) {
         const jobs = [job];
@@ -3548,19 +3552,25 @@ class ChunkStreamer {
     const arena = worker.sharedResultArena;
     if (!arena) return null;
     const slot = arena.slots.find(candidate => candidate.state === 'free');
-    if (!slot) return null;
+    if (!slot) {
+      this.lastStats.sharedResultSlotExhaustions++;
+      return null;
+    }
     slot.state = 'pending';
     slot.key = key;
     slot.generation++;
+    this.lastStats.sharedResultSlotOccupied++;
     return slot;
   }
 
   private releaseSharedResultSlot(worker: ChunkWorker, slotIndex: number | undefined, generation: number | undefined): void {
     if (!Number.isInteger(slotIndex) || !Number.isInteger(generation)) return;
     const slot = worker.sharedResultArena?.slots[slotIndex as number];
-    if (!slot || slot.generation !== generation) return;
+    if (!slot || slot.generation !== generation || slot.state === 'free') return;
     slot.state = 'free';
     slot.key = undefined;
+    this.lastStats.sharedResultSlotOccupied = Math.max(0, this.lastStats.sharedResultSlotOccupied - 1);
+    this.lastStats.sharedResultSlotReleases++;
   }
 
   private releasePendingSharedResultSlots(worker: ChunkWorker): void {
@@ -3570,6 +3580,8 @@ class ChunkStreamer {
       if (slot.state !== 'pending') continue;
       slot.state = 'free';
       slot.key = undefined;
+      this.lastStats.sharedResultSlotOccupied = Math.max(0, this.lastStats.sharedResultSlotOccupied - 1);
+      this.lastStats.sharedResultSlotReleases++;
     }
   }
 
@@ -3609,13 +3621,26 @@ class ChunkStreamer {
     Atomics.store(ints, offset + SHARED_GENERATE_RESULT_GENERATION, resultSlot?.generation ?? 0);
   }
 
+  private dispatchFallbackRemesh(
+    worker: ChunkWorker,
+    job: ChunkJob,
+    densitySamples: Int16Array | undefined,
+    editsToApply: EditOperation[] | undefined,
+  ): void {
+    if (densitySamples) {
+      this.lastStats.remeshFallbackDispatches++;
+      this.lastStats.remeshFallbackBytes += densitySamples.byteLength;
+    }
+    worker.postMessage(
+      { type: 'remeshDensity', ...job, densitySamples, editsToApply: editsToApply ?? [] },
+      densitySamples ? [densitySamples.buffer] as Transferable[] : [],
+    );
+  }
+
   private dispatchSharedRemesh(worker: ChunkWorker, job: ChunkJob): void {
     const page = worker.sharedRemeshPage;
     if (!page || !job.densitySamples || !job.editsToApply) {
-      worker.postMessage(
-        { type: 'remeshDensity', ...job, densitySamples: job.densitySamples, editsToApply: job.editsToApply ?? [] },
-        job.densitySamples ? [job.densitySamples.buffer] as Transferable[] : [],
-      );
+      this.dispatchFallbackRemesh(worker, job, job.densitySamples, job.editsToApply);
       return;
     }
     page.densitySamples.set(job.densitySamples);
@@ -5220,6 +5245,7 @@ function updateOverlay(
     Cave graph: ${formatCaveGraphStats(worldgen.caveGraphStats)}<br/>
     Chunk cache: ${streamer.lastStats.cacheEntries} entries / ${streamer.lastStats.cacheMB.toFixed(1)} MB | Hits/misses: ${streamer.lastStats.cacheHits}/${streamer.lastStats.cacheMisses} | Array pool: ${streamer.lastStats.pooledArrays} / ${streamer.lastStats.pooledMB.toFixed(1)} MB, reuse ${streamer.lastStats.poolHits}/${streamer.lastStats.poolMisses}<br/>
     Worker scratch: ${streamer.lastStats.workerScratchMB.toFixed(3)} MB arenas, reuse ${streamer.lastStats.workerScratchReuses} | Transfer alloc: ${streamer.lastStats.workerTransferMB.toFixed(1)} MB / ${streamer.lastStats.workerTransferAllocations} | Shared pages: ${streamer.lastStats.sharedQueuePages} job / ${streamer.lastStats.sharedRemeshPages} remesh / ${streamer.lastStats.sharedResultPages} result, ${sharedGenerateLine}; remesh/results ${streamer.lastStats.sharedRemeshDispatches}/${streamer.lastStats.sharedResultChunks}, cache borrowed ${streamer.lastStats.sharedResultCacheBorrowedChunks}/${(streamer.lastStats.sharedResultCacheBorrowedBytes / (1024 * 1024)).toFixed(1)} MB, copies ${(streamer.lastStats.sharedResultCacheCopyBytes / (1024 * 1024)).toFixed(1)} MB<br/>
+    Result slots: ${streamer.lastStats.sharedResultSlotOccupied}/${streamer.lastStats.sharedResultSlotCapacity} occupied (${streamer.lastStats.sharedResultSlotExhaustions} exh, ${streamer.lastStats.sharedResultSlotReleases} rel) | Remesh fallback: ${streamer.lastStats.remeshFallbackDispatches} dispatches / ${(streamer.lastStats.remeshFallbackBytes / (1024 * 1024)).toFixed(1)} MB copied<br/>
     Region ${regionName} save/load/export/import: ${streamer.lastStats.savedRegionChunks}/${streamer.lastStats.loadedRegionChunks}/${streamer.lastStats.exportedRegionChunks}/${streamer.lastStats.importedRegionChunks} chunks | Slot: ${slotStatus}<br/>
     Region compression: ${compressionStatus}<br/>
     ${regionDiffLine ? `${regionDiffLine}<br/>` : ''}

@@ -421,6 +421,12 @@ export interface StreamerStats {
   sharedResultCacheCopyBytes: number;
   sharedResultCacheBorrowedChunks: number;
   sharedResultCacheBorrowedBytes: number;
+  sharedResultSlotCapacity: number;
+  sharedResultSlotOccupied: number;
+  sharedResultSlotExhaustions: number;
+  sharedResultSlotReleases: number;
+  remeshFallbackDispatches: number;
+  remeshFallbackBytes: number;
   savedRegionChunks: number;
   loadedRegionChunks: number;
   exportedRegionChunks: number;
