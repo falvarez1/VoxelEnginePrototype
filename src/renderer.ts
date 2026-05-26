@@ -756,6 +756,8 @@ function bytesToMB(bytes: number): number {
   return bytes / (1024 * 1024);
 }
 
+const MULTI_DRAW_INDIRECT_FEATURE = 'chromium-experimental-multi-draw-indirect' as GPUFeatureName;
+
 function detectCapabilities(adapter: GPUAdapter): RuntimeCapabilities {
   const crossOriginIsolated = globalThis.crossOriginIsolated === true;
   const sharedArrayBufferAvailable = typeof SharedArrayBuffer !== 'undefined';
@@ -769,6 +771,7 @@ function detectCapabilities(adapter: GPUAdapter): RuntimeCapabilities {
     maxBufferSizeMB: bytesToMB(adapter.limits.maxBufferSize),
     maxStorageBufferBindingSizeMB: bytesToMB(adapter.limits.maxStorageBufferBindingSize),
     timestampQuery: adapter.features.has('timestamp-query'),
+    multiDrawIndirect: adapter.features.has(MULTI_DRAW_INDIRECT_FEATURE),
   };
 }
 
@@ -2429,6 +2432,7 @@ export class Renderer {
     maxBufferSizeMB: 0,
     maxStorageBufferBindingSizeMB: 0,
     timestampQuery: false,
+    multiDrawIndirect: false,
   };
 
   constructor(canvas: HTMLCanvasElement) {
@@ -2442,7 +2446,10 @@ export class Renderer {
     const adapter = await navigator.gpu.requestAdapter({ powerPreference: 'high-performance' });
     if (!adapter) throw new Error('No WebGPU adapter found.');
     this.capabilities = detectCapabilities(adapter);
-    this.device = await adapter.requestDevice();
+    const requiredFeatures: GPUFeatureName[] = [];
+    if (this.capabilities.multiDrawIndirect) requiredFeatures.push(MULTI_DRAW_INDIRECT_FEATURE);
+    this.device = await adapter.requestDevice(requiredFeatures.length > 0 ? { requiredFeatures } : undefined);
+    this.capabilities.multiDrawIndirect = this.device.features.has(MULTI_DRAW_INDIRECT_FEATURE);
     this.uploadRing = new GpuUploadRing(this.device);
     this.hiZOcclusionCounterBuffer = this.device.createBuffer({
       label: 'hi-z occlusion counters',
@@ -3522,9 +3529,17 @@ export class Renderer {
       pass.setVertexBuffer(0, this.terrainArena.vertexBuffer);
       pass.setVertexBuffer(1, this.terrainArena.originBuffer);
       pass.setIndexBuffer(this.terrainArena.indexBuffer, 'uint32');
-      for (let drawSlot = 0; drawSlot < terrainArenaReplaySlots; drawSlot++) {
-        pass.drawIndexedIndirect(this.terrainArena.compactIndirectBuffer, drawSlot * INDIRECT_INDEXED_ARGS_BYTES);
+      if (this.capabilities.multiDrawIndirect && terrainArenaReplaySlots > 0) {
+        const multiDrawPass = pass as GPURenderPassEncoder & {
+          multiDrawIndexedIndirect: (buffer: GPUBuffer, offset: number, maxDrawCount: number) => void;
+        };
+        multiDrawPass.multiDrawIndexedIndirect(this.terrainArena.compactIndirectBuffer, 0, terrainArenaReplaySlots);
         drawCalls++;
+      } else {
+        for (let drawSlot = 0; drawSlot < terrainArenaReplaySlots; drawSlot++) {
+          pass.drawIndexedIndirect(this.terrainArena.compactIndirectBuffer, drawSlot * INDIRECT_INDEXED_ARGS_BYTES);
+          drawCalls++;
+        }
       }
     }
 

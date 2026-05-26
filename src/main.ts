@@ -5251,7 +5251,7 @@ function updateOverlay(
     ${regionDiffLine ? `${regionDiffLine}<br/>` : ''}
     ${importPreviewLine ? `${importPreviewLine}<br/>` : ''}
     ${densityDiffLine ? `${densityDiffLine}<br/>` : ''}
-    Runtime: WebGPU ${caps.webgpu ? 'on' : 'off'} | COI/SAB: ${caps.crossOriginIsolated ? 'yes' : 'no'}/${caps.sharedArrayBufferAvailable ? 'yes' : 'no'} | Workers: ${workerMode} | Max buffer: ${caps.maxBufferSizeMB.toFixed(0)} MB | Timestamp query: ${caps.timestampQuery ? 'yes' : 'no'}${deviceLost}<br/>
+    Runtime: WebGPU ${caps.webgpu ? 'on' : 'off'} | COI/SAB: ${caps.crossOriginIsolated ? 'yes' : 'no'}/${caps.sharedArrayBufferAvailable ? 'yes' : 'no'} | Workers: ${workerMode} | Max buffer: ${caps.maxBufferSizeMB.toFixed(0)} MB | Timestamp query: ${caps.timestampQuery ? 'yes' : 'no'} | Multi-draw indirect: ${caps.multiDrawIndirect ? 'on' : 'off'}${deviceLost}<br/>
     ${autoQualityLine ? `${autoQualityLine}<br/>` : ''}
     ${benchmarkLine}<br/>
     Camera: ${camera.position[0].toFixed(1)}, ${camera.position[1].toFixed(1)}, ${camera.position[2].toFixed(1)}<br/>

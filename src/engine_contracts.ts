@@ -380,6 +380,7 @@ export interface RuntimeCapabilities {
   maxBufferSizeMB: number;
   maxStorageBufferBindingSizeMB: number;
   timestampQuery: boolean;
+  multiDrawIndirect: boolean;
   deviceLostReason?: string;
 }
 
