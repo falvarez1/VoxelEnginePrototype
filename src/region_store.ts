@@ -184,6 +184,21 @@ function transactionDone(transaction: IDBTransaction): Promise<void> {
   });
 }
 
+interface RequestFailureSink {
+  error?: unknown;
+}
+
+function captureRequestFailure(sink: RequestFailureSink): <T>(request: IDBRequest<T>) => IDBRequest<T> {
+  return <T>(request: IDBRequest<T>): IDBRequest<T> => {
+    request.onerror = () => { sink.error ??= request.error ?? new Error('IndexedDB request failed'); };
+    return request;
+  };
+}
+
+function safeAbortTransaction(transaction: IDBTransaction): void {
+  try { transaction.abort(); } catch { /* transaction already finished */ }
+}
+
 async function openRegionDb(): Promise<IDBDatabase> {
   const request = indexedDB.open(DB_NAME, DB_VERSION);
   request.onupgradeneeded = () => {
@@ -504,38 +519,6 @@ function typedFloat32(bytes: Uint8Array, label: string): Float32Array {
   return new Float32Array(bytes.buffer, bytes.byteOffset, bytes.byteLength / Float32Array.BYTES_PER_ELEMENT);
 }
 
-function deleteRegionChunks(store: IDBObjectStore, regionKey: string): Promise<void> {
-  const index = store.index('regionKey');
-  const request = index.openKeyCursor(IDBKeyRange.only(regionKey));
-  return new Promise((resolve, reject) => {
-    request.onerror = () => reject(request.error ?? new Error('Failed to scan region chunks'));
-    request.onsuccess = () => {
-      const cursor = request.result;
-      if (!cursor) {
-        resolve();
-        return;
-      }
-      store.delete(cursor.primaryKey);
-      cursor.continue();
-    };
-  });
-}
-
-async function getRegionChunkRecords(db: IDBDatabase, regionKey: string): Promise<RegionChunkRecord[]> {
-  const transaction = db.transaction(REGION_CHUNKS_STORE, 'readonly');
-  const records = await requestToPromise<RegionChunkRecord[]>(
-    transaction.objectStore(REGION_CHUNKS_STORE).index('regionKey').getAll(regionKey),
-  );
-  await transactionDone(transaction);
-  return records;
-}
-
-async function clearRegionChunks(db: IDBDatabase, regionKey: string): Promise<void> {
-  const transaction = db.transaction(REGION_CHUNKS_STORE, 'readwrite');
-  await deleteRegionChunks(transaction.objectStore(REGION_CHUNKS_STORE), regionKey);
-  await transactionDone(transaction);
-}
-
 async function replaceRegionRecords(
   db: IDBDatabase,
   regionKey: string,
@@ -548,25 +531,19 @@ async function replaceRegionRecords(
   const transaction = db.transaction([REGION_CHUNKS_STORE, META_STORE], 'readwrite');
   const chunks = transaction.objectStore(REGION_CHUNKS_STORE);
   const meta = transaction.objectStore(META_STORE);
-  let scheduleError: unknown;
-  const captureFailure = <T>(request: IDBRequest<T>): IDBRequest<T> => {
-    request.onerror = () => { scheduleError ??= request.error ?? new Error('IndexedDB request failed'); };
-    return request;
-  };
-  const safeAbort = (): void => {
-    try { transaction.abort(); } catch { /* transaction already finished */ }
-  };
-  const deleteCursor = captureFailure(chunks.index('regionKey').openKeyCursor(IDBKeyRange.only(regionKey)));
+  const sink: RequestFailureSink = {};
+  const capture = captureRequestFailure(sink);
+  const deleteCursor = capture(chunks.index('regionKey').openKeyCursor(IDBKeyRange.only(regionKey)));
   deleteCursor.onsuccess = () => {
     const cursor = deleteCursor.result;
     if (cursor) {
-      captureFailure(chunks.delete(cursor.primaryKey));
+      capture(chunks.delete(cursor.primaryKey));
       cursor.continue();
       return;
     }
     try {
-      for (const record of records) captureFailure(chunks.put(record));
-      captureFailure(meta.put({
+      for (const record of records) capture(chunks.put(record));
+      capture(meta.put({
         key: regionKey,
         name,
         editLog: snapshot.editLog,
@@ -581,14 +558,14 @@ async function replaceRegionRecords(
         compression,
       } satisfies RegionMeta));
     } catch (error) {
-      scheduleError ??= error;
-      safeAbort();
+      sink.error ??= error;
+      safeAbortTransaction(transaction);
     }
   };
   try {
     await transactionDone(transaction);
   } catch (error) {
-    throw scheduleError ?? error;
+    throw sink.error ?? error;
   }
 }
 
@@ -609,21 +586,32 @@ export class RegionStore {
   async load(regionKey = REGION_KEY): Promise<RegionSnapshot | null> {
     const db = await openRegionDb();
     try {
-      const metaTransaction = db.transaction(META_STORE, 'readonly');
-      const meta = await requestToPromise<RegionMeta | undefined>(metaTransaction.objectStore(META_STORE).get(regionKey));
-      await transactionDone(metaTransaction);
+      const includeLegacy = regionKey === REGION_KEY && db.objectStoreNames.contains(LEGACY_CHUNKS_STORE);
+      const stores: string[] = includeLegacy
+        ? [META_STORE, REGION_CHUNKS_STORE, LEGACY_CHUNKS_STORE]
+        : [META_STORE, REGION_CHUNKS_STORE];
+      const transaction = db.transaction(stores, 'readonly');
+      const sink: RequestFailureSink = {};
+      const capture = captureRequestFailure(sink);
+      const metaRequest = capture(transaction.objectStore(META_STORE).get(regionKey) as IDBRequest<RegionMeta | undefined>);
+      const recordsRequest = capture(transaction.objectStore(REGION_CHUNKS_STORE).index('regionKey').getAll(regionKey) as IDBRequest<RegionChunkRecord[]>);
+      const legacyRequest = includeLegacy
+        ? capture(transaction.objectStore(LEGACY_CHUNKS_STORE).getAll() as IDBRequest<PersistedChunkMesh[]>)
+        : null;
+      try {
+        await transactionDone(transaction);
+      } catch (error) {
+        throw sink.error ?? error;
+      }
+      const meta = metaRequest.result;
       if (!meta) return null;
-
-      let records = await getRegionChunkRecords(db, regionKey);
+      const records = recordsRequest.result;
       let compression = recordsCompression(records);
       let chunks = records.map(persistedChunk);
-      if (chunks.length === 0 && regionKey === REGION_KEY && db.objectStoreNames.contains(LEGACY_CHUNKS_STORE)) {
-        const legacyTransaction = db.transaction(LEGACY_CHUNKS_STORE, 'readonly');
-        chunks = await requestToPromise<PersistedChunkMesh[]>(legacyTransaction.objectStore(LEGACY_CHUNKS_STORE).getAll());
-        await transactionDone(legacyTransaction);
+      if (chunks.length === 0 && legacyRequest) {
+        chunks = legacyRequest.result;
         compression = meta.compression ?? createPayloadCompressionStats();
       }
-
       return {
         editLog: meta.editLog ?? [],
         undoneEdits: meta.undoneEdits ?? [],
@@ -669,19 +657,30 @@ export class RegionStore {
   async inspect(regionKey = REGION_KEY): Promise<RegionPayloadInspection | null> {
     const db = await openRegionDb();
     try {
-      const metaTransaction = db.transaction(META_STORE, 'readonly');
-      const meta = await requestToPromise<RegionMeta | undefined>(metaTransaction.objectStore(META_STORE).get(regionKey));
-      await transactionDone(metaTransaction);
+      const includeLegacy = regionKey === REGION_KEY && db.objectStoreNames.contains(LEGACY_CHUNKS_STORE);
+      const stores: string[] = includeLegacy
+        ? [META_STORE, REGION_CHUNKS_STORE, LEGACY_CHUNKS_STORE]
+        : [META_STORE, REGION_CHUNKS_STORE];
+      const transaction = db.transaction(stores, 'readonly');
+      const sink: RequestFailureSink = {};
+      const capture = captureRequestFailure(sink);
+      const metaRequest = capture(transaction.objectStore(META_STORE).get(regionKey) as IDBRequest<RegionMeta | undefined>);
+      const recordsRequest = capture(transaction.objectStore(REGION_CHUNKS_STORE).index('regionKey').getAll(regionKey) as IDBRequest<RegionChunkRecord[]>);
+      const legacyRequest = includeLegacy
+        ? capture(transaction.objectStore(LEGACY_CHUNKS_STORE).getAll() as IDBRequest<PersistedChunkMesh[]>)
+        : null;
+      try {
+        await transactionDone(transaction);
+      } catch (error) {
+        throw sink.error ?? error;
+      }
+      const meta = metaRequest.result;
       if (!meta) return null;
-
-      const records = await getRegionChunkRecords(db, regionKey);
+      const records = recordsRequest.result;
       let compression = recordsCompression(records);
       let chunks = records.map(chunkPayloadInfo);
-      if (chunks.length === 0 && regionKey === REGION_KEY && db.objectStoreNames.contains(LEGACY_CHUNKS_STORE)) {
-        const legacyTransaction = db.transaction(LEGACY_CHUNKS_STORE, 'readonly');
-        const legacyChunks = await requestToPromise<PersistedChunkMesh[]>(legacyTransaction.objectStore(LEGACY_CHUNKS_STORE).getAll());
-        await transactionDone(legacyTransaction);
-        chunks = legacyChunks.map(legacyChunkPayloadInfo);
+      if (chunks.length === 0 && legacyRequest) {
+        chunks = legacyRequest.result.map(legacyChunkPayloadInfo);
         compression = meta.compression ?? createPayloadCompressionStats();
       }
       const largestChunks = [...chunks].sort((a, b) => b.encodedBytes - a.encodedBytes).slice(0, 6);
@@ -703,18 +702,29 @@ export class RegionStore {
   async verifyPayloadHashes(regionKey = REGION_KEY): Promise<RegionPayloadHashAudit | null> {
     const db = await openRegionDb();
     try {
-      const metaTransaction = db.transaction(META_STORE, 'readonly');
-      const meta = await requestToPromise<RegionMeta | undefined>(metaTransaction.objectStore(META_STORE).get(regionKey));
-      await transactionDone(metaTransaction);
+      const includeLegacy = regionKey === REGION_KEY && db.objectStoreNames.contains(LEGACY_CHUNKS_STORE);
+      const stores: string[] = includeLegacy
+        ? [META_STORE, REGION_CHUNKS_STORE, LEGACY_CHUNKS_STORE]
+        : [META_STORE, REGION_CHUNKS_STORE];
+      const transaction = db.transaction(stores, 'readonly');
+      const sink: RequestFailureSink = {};
+      const capture = captureRequestFailure(sink);
+      const metaRequest = capture(transaction.objectStore(META_STORE).get(regionKey) as IDBRequest<RegionMeta | undefined>);
+      const recordsRequest = capture(transaction.objectStore(REGION_CHUNKS_STORE).index('regionKey').getAll(regionKey) as IDBRequest<RegionChunkRecord[]>);
+      const legacyRequest = includeLegacy
+        ? capture(transaction.objectStore(LEGACY_CHUNKS_STORE).getAll() as IDBRequest<PersistedChunkMesh[]>)
+        : null;
+      try {
+        await transactionDone(transaction);
+      } catch (error) {
+        throw sink.error ?? error;
+      }
+      const meta = metaRequest.result;
       if (!meta) return null;
-
-      const records = await getRegionChunkRecords(db, regionKey);
+      const records = recordsRequest.result;
       let chunks = records.map(chunkPayloadHashAudit);
-      if (chunks.length === 0 && regionKey === REGION_KEY && db.objectStoreNames.contains(LEGACY_CHUNKS_STORE)) {
-        const legacyTransaction = db.transaction(LEGACY_CHUNKS_STORE, 'readonly');
-        const legacyChunks = await requestToPromise<PersistedChunkMesh[]>(legacyTransaction.objectStore(LEGACY_CHUNKS_STORE).getAll());
-        await transactionDone(legacyTransaction);
-        chunks = legacyChunks.map(legacyChunkPayloadHashAudit);
+      if (chunks.length === 0 && legacyRequest) {
+        chunks = legacyRequest.result.map(legacyChunkPayloadHashAudit);
       }
       return payloadAuditSummary(meta, chunks);
     } finally {
@@ -725,10 +735,31 @@ export class RegionStore {
   async clear(regionKey = REGION_KEY): Promise<void> {
     const db = await openRegionDb();
     try {
-      await clearRegionChunks(db, regionKey);
-      const transaction = db.transaction(META_STORE, 'readwrite');
-      transaction.objectStore(META_STORE).delete(regionKey);
-      await transactionDone(transaction);
+      const transaction = db.transaction([REGION_CHUNKS_STORE, META_STORE], 'readwrite');
+      const chunks = transaction.objectStore(REGION_CHUNKS_STORE);
+      const meta = transaction.objectStore(META_STORE);
+      const sink: RequestFailureSink = {};
+      const capture = captureRequestFailure(sink);
+      const deleteCursor = capture(chunks.index('regionKey').openKeyCursor(IDBKeyRange.only(regionKey)));
+      deleteCursor.onsuccess = () => {
+        const cursor = deleteCursor.result;
+        if (cursor) {
+          capture(chunks.delete(cursor.primaryKey));
+          cursor.continue();
+          return;
+        }
+        try {
+          capture(meta.delete(regionKey));
+        } catch (error) {
+          sink.error ??= error;
+          safeAbortTransaction(transaction);
+        }
+      };
+      try {
+        await transactionDone(transaction);
+      } catch (error) {
+        throw sink.error ?? error;
+      }
     } finally {
       db.close();
     }
