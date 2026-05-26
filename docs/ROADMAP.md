@@ -82,7 +82,7 @@ Implemented:
 
 ## Phase 2 — Better terrain chunks
 
-- Extend the current typed-array pool, worker scratch telemetry, and explicit shared-result cache ownership into larger region-browser workflows and stronger remesh/input lifetime ownership.
+- Extend the current typed-array pool, worker scratch telemetry, and explicit shared-result cache ownership into larger region-browser workflows and stronger remesh/input lifetime ownership. Status: shared-result slot pressure (capacity/occupied/exhaustions/releases) and remesh fallback dispatch/byte telemetry now flow through the overlay and Export Quality/Diagnostic JSON for sizing decisions; `RegionStore` save/load/inspect/verify/clear now run in single atomic IDB transactions with originating DOMException context preserved through a shared `captureRequestFailure` helper.
 - Expand the current named retention policy, dry-run, maintenance-history, report-export, searchable payload-inspection, saved-vs-saved payload-comparison, and decode/hash verification workflow into stronger saved-region investigations and cache-lifetime ownership.
 - Extend the browser-driven visual capture workflow beyond compact PNG metrics/signatures and current HTML review artifacts into richer full-resolution perceptual comparison. Status: the visual baseline now stores compressed full-resolution luma fields, compare mode reports full-resolution luma delta, changed-pixel fraction, global SSIM, block-SSIM tail statistics, and writes full-resolution luma diff heatmaps.
 - Tune the current batched SharedArrayBuffer generate queue, remesh pages, and explicit cache-borrowed result slots toward lower slot pressure, fewer remesh copies, and clearer eviction telemetry.
@@ -90,7 +90,7 @@ Implemented:
 ## Phase 3 — Production meshing
 
 - Add richer brush/editor tooling and additional region-management actions around the current sphere/box/capsule edit operations, carve/build falloff, smooth mode, flatten/path mode, material paint mode, configurable placement distance, live slot browser, and `.scvb` bundle workflows.
-- Promote the current CPU-frustum range batching plus Hi-Z range-indirect bridge into GPU-owned visible-cluster compaction and production terrain draw batching.
+- Promote the current CPU-frustum range batching plus Hi-Z range-indirect bridge into GPU-owned visible-cluster compaction and production terrain draw batching. Status: when the adapter exposes `chromium-experimental-multi-draw-indirect` the renderer collapses the per-slot replay loop into a single `multiDrawIndexedIndirect` call against the compacted indirect buffer; the per-slot loop remains as a fallback for adapters without the feature. A standards-track multi-draw / draw-count submission and GPU-owned compaction are still pending.
 - Promote the native transition-cell ABI plus runtime aggregate transition-prism mesh bridge into full native Transvoxel transition mesh chunks, then remove the temporary seam-skirt contract.
 
 ## Phase 4 — World generation
