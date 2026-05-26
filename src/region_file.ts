@@ -204,20 +204,39 @@ function normalizeEditHistoryBranch(value: unknown): EditHistoryBranch | null {
   };
 }
 
+function normalizeProgressIds(value: unknown): number[] {
+  return Array.isArray(value)
+    ? [...new Set(value
+      .map(id => Math.trunc(finiteNumber(id, -1)))
+      .filter(id => Number.isInteger(id) && id >= 0))]
+    : [];
+}
+
 function normalizeGameProgress(value: unknown): GameProgress | undefined {
   const raw = value as Partial<GameProgress> | null | undefined;
   if (!raw || !Array.isArray(raw.collectedBeaconIds)) return undefined;
-  return {
-    version: 1,
-    collectedBeaconIds: [...new Set(raw.collectedBeaconIds
-      .map(id => Math.trunc(finiteNumber(id, -1)))
-      .filter(id => Number.isInteger(id) && id >= 0))],
-    completedContractIds: Array.isArray(raw.completedContractIds)
-      ? [...new Set(raw.completedContractIds
-        .map(id => Math.trunc(finiteNumber(id, -1)))
-        .filter(id => Number.isInteger(id) && id >= 0))]
-      : [],
+  const base = {
+    collectedBeaconIds: normalizeProgressIds(raw.collectedBeaconIds),
+    completedContractIds: normalizeProgressIds(raw.completedContractIds),
     updatedAt: finiteNumber(raw.updatedAt, Date.now()),
+  };
+  const progressVersion = integerNumber(raw.version, 1);
+  const hasTraversalMeters = typeof raw.traversalMeters === 'number' && Number.isFinite(raw.traversalMeters);
+  const hasVisitedArray = Array.isArray(raw.visitedCheckpointIds) && raw.visitedCheckpointIds.length > 0;
+  const hasClearedArray = Array.isArray(raw.clearedHazardIds) && raw.clearedHazardIds.length > 0;
+  const isV2 = progressVersion >= 2 || hasVisitedArray || hasClearedArray || hasTraversalMeters;
+  if (!isV2) {
+    return {
+      version: 1,
+      ...base,
+    };
+  }
+  return {
+    version: 2,
+    ...base,
+    visitedCheckpointIds: normalizeProgressIds(raw.visitedCheckpointIds),
+    clearedHazardIds: normalizeProgressIds(raw.clearedHazardIds),
+    traversalMeters: Math.max(0, Math.min(1000000, finiteNumber(raw.traversalMeters, 0))),
   };
 }
 

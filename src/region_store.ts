@@ -536,19 +536,37 @@ async function clearRegionChunks(db: IDBDatabase, regionKey: string): Promise<vo
   await transactionDone(transaction);
 }
 
-export class RegionStore {
-  async save(snapshot: Omit<RegionSnapshot, 'savedAt'>, regionKey = REGION_KEY, name = regionKey): Promise<RegionSnapshot> {
-    const savedAt = Date.now();
-    const db = await openRegionDb();
+async function replaceRegionRecords(
+  db: IDBDatabase,
+  regionKey: string,
+  name: string,
+  snapshot: Omit<RegionSnapshot, 'savedAt'>,
+  savedAt: number,
+  records: RegionChunkRecord[],
+  compression: PayloadCompressionStats,
+): Promise<void> {
+  const transaction = db.transaction([REGION_CHUNKS_STORE, META_STORE], 'readwrite');
+  const chunks = transaction.objectStore(REGION_CHUNKS_STORE);
+  const meta = transaction.objectStore(META_STORE);
+  let scheduleError: unknown;
+  const captureFailure = <T>(request: IDBRequest<T>): IDBRequest<T> => {
+    request.onerror = () => { scheduleError ??= request.error ?? new Error('IndexedDB request failed'); };
+    return request;
+  };
+  const safeAbort = (): void => {
+    try { transaction.abort(); } catch { /* transaction already finished */ }
+  };
+  const deleteCursor = captureFailure(chunks.index('regionKey').openKeyCursor(IDBKeyRange.only(regionKey)));
+  deleteCursor.onsuccess = () => {
+    const cursor = deleteCursor.result;
+    if (cursor) {
+      captureFailure(chunks.delete(cursor.primaryKey));
+      cursor.continue();
+      return;
+    }
     try {
-      await clearRegionChunks(db, regionKey);
-      const records = snapshot.chunks.map(chunk => chunkRecord(regionKey, chunk));
-      const compression = recordsCompression(records);
-      const transaction = db.transaction([REGION_CHUNKS_STORE, META_STORE], 'readwrite');
-      const chunks = transaction.objectStore(REGION_CHUNKS_STORE);
-      const meta = transaction.objectStore(META_STORE);
-      for (const record of records) chunks.put(record);
-      meta.put({
+      for (const record of records) captureFailure(chunks.put(record));
+      captureFailure(meta.put({
         key: regionKey,
         name,
         editLog: snapshot.editLog,
@@ -561,8 +579,27 @@ export class RegionStore {
         savedAt,
         chunkCount: snapshot.chunks.length,
         compression,
-      } satisfies RegionMeta);
-      await transactionDone(transaction);
+      } satisfies RegionMeta));
+    } catch (error) {
+      scheduleError ??= error;
+      safeAbort();
+    }
+  };
+  try {
+    await transactionDone(transaction);
+  } catch (error) {
+    throw scheduleError ?? error;
+  }
+}
+
+export class RegionStore {
+  async save(snapshot: Omit<RegionSnapshot, 'savedAt'>, regionKey = REGION_KEY, name = regionKey): Promise<RegionSnapshot> {
+    const savedAt = Date.now();
+    const records = snapshot.chunks.map(chunk => chunkRecord(regionKey, chunk));
+    const compression = recordsCompression(records);
+    const db = await openRegionDb();
+    try {
+      await replaceRegionRecords(db, regionKey, name, snapshot, savedAt, records, compression);
       return { ...snapshot, savedAt, compression };
     } finally {
       db.close();
