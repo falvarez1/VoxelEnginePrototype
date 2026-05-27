@@ -1235,6 +1235,72 @@ export function registerEngineConsoleCommands(console: EngineConsole, deps: Cons
   });
 
   console.register({
+    name: 'markers',
+    description: 'Print active marker counts (game + edit/debug).',
+    handler: (_args, ctx) => {
+      const r = deps.renderer.stats as unknown as Record<string, number | undefined>;
+      ctx.log(`gameMarkers=${r.gameMarkers ?? 0} debugMarkers=${r.debugMarkers ?? 0}`);
+    },
+  });
+
+  console.register({
+    name: 'panels',
+    description: 'Print current visibility flags for all panels.',
+    handler: (_args, ctx) => {
+      const s = deps.getSettings();
+      ctx.log(`overlay=${s.overlayPanelVisible} settings=${s.settingsPanelVisible} density=${s.densityPanelVisible} regionBrowser=${s.regionBrowserPanelVisible}`);
+    },
+  });
+
+  console.register({
+    name: 'flash',
+    description: 'Briefly toggle a setting twice (off then back) to verify the renderer/streamer responds.',
+    usage: '<key>',
+    handler: async (args, ctx) => {
+      if (!requireArgs(args, 1, ctx, 'flash <key>')) return;
+      const key = args[0] as keyof EngineSettings;
+      const settings = deps.getSettings() as unknown as Record<string, unknown>;
+      const original = settings[String(key)];
+      if (original === undefined) { ctx.error(`Unknown setting: ${args[0]}`); return; }
+      if (typeof original !== 'boolean') { ctx.error(`flash currently only handles boolean settings, got ${typeof original}`); return; }
+      deps.setSettings({ ...deps.getSettings(), [key]: !original }, key);
+      await new Promise<void>(resolve => window.setTimeout(resolve, 200));
+      deps.setSettings({ ...deps.getSettings(), [key]: original }, key);
+      ctx.log(`flashed ${args[0]} (off and back on)`);
+    },
+  });
+
+  console.register({
+    name: 'sweep',
+    description: 'Sweep a numeric setting from lo to hi in N steps with a delay. Restores original at end.',
+    usage: '<key> <lo> <hi> <steps> [delayMs=120]',
+    handler: async (args, ctx) => {
+      if (!requireArgs(args, 4, ctx, 'sweep <key> <lo> <hi> <steps> [delayMs]')) return;
+      const key = args[0] as keyof EngineSettings;
+      const settings = deps.getSettings() as unknown as Record<string, unknown>;
+      const original = settings[String(key)];
+      if (original === undefined) { ctx.error(`Unknown setting: ${args[0]}`); return; }
+      if (typeof original !== 'number') { ctx.error(`sweep requires a numeric setting, got ${typeof original}`); return; }
+      const lo = parseNumber(args[1]);
+      const hi = parseNumber(args[2]);
+      const steps = parseNumber(args[3]);
+      const delay = parseNumber(args[4]) ?? 120;
+      if (lo === null || hi === null || steps === null || steps < 1) { ctx.error('Invalid sweep arguments'); return; }
+      const n = Math.min(64, Math.round(steps));
+      const span = hi - lo;
+      for (let i = 0; i <= n; i++) {
+        const t = n === 0 ? 0 : i / n;
+        const value = lo + span * t;
+        deps.setSettings({ ...deps.getSettings(), [key]: value }, key);
+        ctx.log(`  ${args[0]}=${describeNumber(value, 3)}`);
+        await new Promise<void>(resolve => window.setTimeout(resolve, Math.max(0, delay)));
+      }
+      deps.setSettings({ ...deps.getSettings(), [key]: original }, key);
+      ctx.log(`sweep done; restored ${args[0]}=${original}`);
+    },
+  });
+
+  console.register({
     name: 'crash',
     description: 'Intentionally trigger an error path. crash <unknown-action|throw|reject|setting>',
     usage: '<kind>',
