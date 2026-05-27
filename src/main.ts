@@ -615,7 +615,6 @@ const DEFAULT_ENGINE_SETTINGS: EngineSettings = {
   streamRadius: DEFAULT_STREAM_RADIUS,
   streamingEnabled: true,
   terrainLodEnabled: false,
-  lodSeamSkirtsEnabled: true,
   nearTerrainEnabled: true,
   farTerrainEnabled: true,
   waterEnabled: true,
@@ -973,7 +972,6 @@ function sanitizeEngineSettings(raw: Partial<EngineSettings> = {}): EngineSettin
     streamRadius: clampInt(raw.streamRadius ?? DEFAULT_ENGINE_SETTINGS.streamRadius, MIN_STREAM_RADIUS, MAX_STREAM_RADIUS),
     streamingEnabled: raw.streamingEnabled !== false,
     terrainLodEnabled: raw.terrainLodEnabled === true,
-    lodSeamSkirtsEnabled: raw.lodSeamSkirtsEnabled !== false,
     nearTerrainEnabled: raw.nearTerrainEnabled === true,
     farTerrainEnabled: raw.farTerrainEnabled !== false,
     waterEnabled: raw.waterEnabled !== false,
@@ -1386,7 +1384,6 @@ function applyEngineSettings(settings: EngineSettings, camera: FlyCamera, render
     farTerrainEnabled: settings.farTerrainEnabled,
     waterEnabled: settings.waterEnabled,
     vegetationEnabled: settings.vegetationEnabled,
-    lodSeamSkirtsEnabled: settings.lodSeamSkirtsEnabled,
     fogDensity: settings.fogDensity,
     materialDetail: settings.materialDetail,
     exposure: settings.exposure,
@@ -5237,7 +5234,7 @@ function updateOverlay(
     Route flags: ${game.visitedCheckpoints}/${game.totalCheckpoints} ${nextCheckpoint} | Hazards: ${game.clearedHazards}/${game.totalHazards} ${nextHazard}${activeHazard}<br/>
     Expedition: ${game.rank} | Score: ${game.score} | Inv samples/kits/flags: ${game.inventorySamples}/${game.inventoryFieldKits}/${game.inventoryRouteFlags} | Travel: ${(game.traversalMeters / 1000).toFixed(2)}km | Active markers: ${rstats.gameMarkers} | Edit markers: ${rstats.debugMarkers}<br/>
     Chunks loaded/queued/pending: ${counts.loaded}/${counts.queued}/${counts.pending} | Visible/culled: ${rstats.visibleTerrainChunks}/${rstats.culledTerrainChunks} | Workers: ${counts.workers} (${counts.idle} idle)<br/>
-    Meshes: ${profile.meshCount} (LOD 0/1/2+: ${profile.terrainLod0Chunks}/${profile.terrainLod1Chunks}/${profile.terrainLod2PlusChunks}, seams ${profile.terrainLodTransitionEdges}/${profile.terrainLodSkirtTriangles} skirt tris, transition mesh ${profile.terrainLodTransitionMeshChunks}/${profile.terrainLodTransitionMeshTriangles} tris) | Vegetation patches visible/culled/total: ${rstats.visibleVegetationPatches}/${rstats.culledVegetationPatches}/${profile.vegetationPatchCount} | Veg instances/draws: ${rstats.vegetationInstances}/${rstats.vegetationDrawCalls} batched, LOD culled ${rstats.vegetationLodCulledInstances} | Avg WASM mesh: ${streamer.lastStats.avgMeshMs.toFixed(1)} ms<br/>
+    Meshes: ${profile.meshCount} (LOD 0/1/2+: ${profile.terrainLod0Chunks}/${profile.terrainLod1Chunks}/${profile.terrainLod2PlusChunks}, seams ${profile.terrainLodTransitionEdges} edges, transition mesh ${profile.terrainLodTransitionMeshChunks}/${profile.terrainLodTransitionMeshTriangles} tris) | Vegetation patches visible/culled/total: ${rstats.visibleVegetationPatches}/${rstats.culledVegetationPatches}/${profile.vegetationPatchCount} | Veg instances/draws: ${rstats.vegetationInstances}/${rstats.vegetationDrawCalls} batched, LOD culled ${rstats.vegetationLodCulledInstances} | Avg WASM mesh: ${streamer.lastStats.avgMeshMs.toFixed(1)} ms<br/>
     Upload: ${streamer.lastStats.uploadMB.toFixed(2)} MB last / ${profile.avgUploadMB.toFixed(2)} MB avg | GPU buffers est: ${profile.estimatedGpuMB.toFixed(1)} MB (${profile.chunkMeshMB.toFixed(1)} terrain, ${profile.farTerrainMB.toFixed(1)} far, ${profile.vegetationMB.toFixed(1)} veg, ${profile.waterMB.toFixed(2)} water, ${profile.depthPyramidMB.toFixed(2)} hi-z/${profile.depthPyramidMips} mips, ${profile.uploadRingMB.toFixed(1)} staging)<br/>
     Renderer upload ring: ${profile.uploadRingPages} pages | last ${profile.uploadRingLastFlushMB.toFixed(2)} MB | pending ${profile.uploadRingPendingMB.toFixed(2)} MB | fallback ${profile.uploadRingFallbackUploads}/${profile.uploadRingFallbackMB.toFixed(2)} MB<br/>
     Generated/remeshed: ${streamer.lastStats.generated}/${streamer.lastStats.remeshed} | Stale discarded: ${streamer.lastStats.discarded} | Mesh overflow events: ${streamer.lastStats.overflow} | Brush: ${brushModeLabel(settings.brushMode)}${brushMaterial} ${brushShapeLabel(brushShape)} r${settings.editRadius.toFixed(1)}m${brushFalloff}${brushStrength} @ ${settings.brushDistance.toFixed(0)}m${brushShape === 'capsule' ? ` l${settings.brushLength.toFixed(1)}m` : ''} | Edits: ${streamer.lastStats.editCount}/${MAX_EDIT_OPERATIONS} | Redo: ${streamer.lastStats.redoEditCount} | Branches: ${streamer.lastStats.editBranchCount}/${streamer.lastStats.editBranchEditCount} edits | Density payload: ${streamer.lastStats.densityKB.toFixed(1)} KB/chunk<br/>

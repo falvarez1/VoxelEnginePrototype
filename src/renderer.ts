@@ -36,7 +36,6 @@ const DEFAULT_RENDERER_SETTINGS: RendererSettings = {
   farTerrainEnabled: true,
   waterEnabled: true,
   vegetationEnabled: true,
-  lodSeamSkirtsEnabled: true,
   fogDensity: 0.42,
   materialDetail: 0.68,
   exposure: 1.54,
@@ -64,7 +63,6 @@ interface RenderableChunk {
   bounds: SphereBounds;
   stats: ChunkMeshStats;
   lodSeamMask: number;
-  lodSeamSkirtTriangles: number;
 }
 
 interface VisibleTerrainChunk {
@@ -149,9 +147,6 @@ const LOD_SEAM_POS_X = 1 << 1;
 const LOD_SEAM_NEG_Z = 1 << 2;
 const LOD_SEAM_POS_Z = 1 << 3;
 const LOD_SEAM_MASK_ALL = LOD_SEAM_NEG_X | LOD_SEAM_POS_X | LOD_SEAM_NEG_Z | LOD_SEAM_POS_Z;
-const LOD_SEAM_SKIRT_DEPTH = 5.5;
-const PACKED_POSITION_MAX = 65535;
-const PACKED_BORDER_EPSILON = 96;
 const SCENIC_WATER_LEVEL = 8.8;
 const FAR_TERRAIN_VISUAL_BASE_HEIGHT = 1.8;
 const FAR_TERRAIN_VISUAL_HEIGHT_SCALE = 1.98;
@@ -479,7 +474,6 @@ class TerrainGpuArena {
     bounds: SphereBounds,
     stats: ChunkMeshStats,
     lodSeamMask: number,
-    lodSeamSkirtTriangles: number,
   ): RenderableChunk {
     this.removeChunk(key);
     const vertexCount = Math.floor(vertices.byteLength / PACKED_TERRAIN_VERTEX_STRIDE);
@@ -526,7 +520,6 @@ class TerrainGpuArena {
       bounds,
       stats,
       lodSeamMask,
-      lodSeamSkirtTriangles,
     };
     this.allocations.set(key, chunk);
     return chunk;
@@ -956,109 +949,6 @@ function createIndirectArgsBuffer(device: GPUDevice, clusterCount: number, label
     GPUBufferUsage.INDIRECT | GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
     label,
   );
-}
-
-function packedVertexOffset(vertexIndex: number): number {
-  return vertexIndex * PACKED_TERRAIN_VERTEX_STRIDE;
-}
-
-function packedPositionComponent(view: DataView, vertexIndex: number, byteOffset: number): number {
-  return view.getUint16(packedVertexOffset(vertexIndex) + byteOffset, true);
-}
-
-function boundaryMaskForPackedEdge(view: DataView, a: number, b: number): number {
-  const ax = packedPositionComponent(view, a, 0);
-  const bx = packedPositionComponent(view, b, 0);
-  const az = packedPositionComponent(view, a, 4);
-  const bz = packedPositionComponent(view, b, 4);
-  let mask = 0;
-  if (ax <= PACKED_BORDER_EPSILON && bx <= PACKED_BORDER_EPSILON) mask |= LOD_SEAM_NEG_X;
-  if (ax >= PACKED_POSITION_MAX - PACKED_BORDER_EPSILON && bx >= PACKED_POSITION_MAX - PACKED_BORDER_EPSILON) mask |= LOD_SEAM_POS_X;
-  if (az <= PACKED_BORDER_EPSILON && bz <= PACKED_BORDER_EPSILON) mask |= LOD_SEAM_NEG_Z;
-  if (az >= PACKED_POSITION_MAX - PACKED_BORDER_EPSILON && bz >= PACKED_POSITION_MAX - PACKED_BORDER_EPSILON) mask |= LOD_SEAM_POS_Z;
-  return mask;
-}
-
-function appendLodSeamSkirts(
-  vertices: Uint8Array,
-  indices: Uint32Array,
-  frame: TerrainPackFrame,
-  seamMask: number,
-): { vertices: Uint8Array; indices: Uint32Array; skirtTriangles: number } {
-  const activeMask = seamMask & LOD_SEAM_MASK_ALL;
-  if (!activeMask || vertices.byteLength < PACKED_TERRAIN_VERTEX_STRIDE || indices.length < 3) {
-    return { vertices, indices, skirtTriangles: 0 };
-  }
-
-  const vertexCount = Math.floor(vertices.byteLength / PACKED_TERRAIN_VERTEX_STRIDE);
-  const sourceView = new DataView(vertices.buffer, vertices.byteOffset, vertices.byteLength);
-  const bottomIndexByKey = new Map<string, number>();
-  const bottomRequests: { top: number }[] = [];
-  const extraIndices: number[] = [];
-  const seenEdges = new Set<string>();
-
-  const bottomIndex = (side: number, top: number): number => {
-    const key = `${side}:${top}`;
-    const existing = bottomIndexByKey.get(key);
-    if (existing !== undefined) return existing;
-    const next = vertexCount + bottomRequests.length;
-    bottomIndexByKey.set(key, next);
-    bottomRequests.push({ top });
-    return next;
-  };
-
-  const addEdge = (side: number, a: number, b: number): void => {
-    const edgeKey = a < b ? `${side}:${a}:${b}` : `${side}:${b}:${a}`;
-    if (seenEdges.has(edgeKey)) return;
-    seenEdges.add(edgeKey);
-    const ba = bottomIndex(side, a);
-    const bb = bottomIndex(side, b);
-    extraIndices.push(a, b, ba, b, bb, ba);
-  };
-
-  for (let i = 0; i + 2 < indices.length; i += 3) {
-    const ia = indices[i];
-    const ib = indices[i + 1];
-    const ic = indices[i + 2];
-    if (ia >= vertexCount || ib >= vertexCount || ic >= vertexCount) continue;
-    const edges = [[ia, ib], [ib, ic], [ic, ia]] as const;
-    for (const [a, b] of edges) {
-      const edgeMask = boundaryMaskForPackedEdge(sourceView, a, b) & activeMask;
-      if (!edgeMask) continue;
-      for (const side of [LOD_SEAM_NEG_X, LOD_SEAM_POS_X, LOD_SEAM_NEG_Z, LOD_SEAM_POS_Z]) {
-        if ((edgeMask & side) !== 0) addEdge(side, a, b);
-      }
-    }
-  }
-
-  if (extraIndices.length === 0 || bottomRequests.length === 0) return { vertices, indices, skirtTriangles: 0 };
-
-  const nextVertices = new Uint8Array(vertices.byteLength + bottomRequests.length * PACKED_TERRAIN_VERTEX_STRIDE);
-  nextVertices.set(vertices);
-  const nextView = new DataView(nextVertices.buffer);
-  const drop = Math.max(1, Math.round((LOD_SEAM_SKIRT_DEPTH / Math.max(frame.scale, 0.0001)) * PACKED_POSITION_MAX));
-
-  for (let i = 0; i < bottomRequests.length; i++) {
-    const topOffset = packedVertexOffset(bottomRequests[i].top);
-    const dstOffset = vertices.byteLength + i * PACKED_TERRAIN_VERTEX_STRIDE;
-    nextVertices.set(vertices.subarray(topOffset, topOffset + PACKED_TERRAIN_VERTEX_STRIDE), dstOffset);
-    const y = nextView.getUint16(dstOffset + 2, true);
-    nextView.setUint16(dstOffset + 2, Math.max(0, y - drop), true);
-    nextVertices[dstOffset + 11] = Math.min(nextVertices[dstOffset + 11], 165);
-  }
-
-  const nextIndices = new Uint32Array(indices.length + extraIndices.length);
-  nextIndices.set(indices);
-  nextIndices.set(extraIndices, indices.length);
-  return { vertices: nextVertices, indices: nextIndices, skirtTriangles: extraIndices.length / 3 };
-}
-
-function expandedBoundsForLodSkirts(bounds: SphereBounds, skirtTriangles: number): SphereBounds {
-  if (skirtTriangles <= 0) return bounds;
-  return {
-    center: [bounds.center[0], bounds.center[1], bounds.center[2]],
-    radius: bounds.radius + LOD_SEAM_SKIRT_DEPTH,
-  };
 }
 
 function countLodTransitionEdges(mask: number): number {
@@ -2848,17 +2738,10 @@ export class Renderer {
     this.removeChunk(key);
     if (!vertices || !indices || indices.length === 0) return;
     const lodSeamMask = Math.max(0, Math.trunc(stats.lodSeamMask ?? 0)) & LOD_SEAM_MASK_ALL;
-    const seammed = this.settings.lodSeamSkirtsEnabled
-      ? appendLodSeamSkirts(vertices, indices, frame, lodSeamMask)
-      : { vertices, indices, skirtTriangles: 0 };
-    vertices = seammed.vertices;
-    indices = seammed.indices;
     const nextStats: ChunkMeshStats = {
       ...stats,
       lodSeamMask,
-      lodSeamSkirtTriangles: seammed.skirtTriangles,
     };
-    const renderBounds = expandedBoundsForLodSkirts(bounds, seammed.skirtTriangles);
     const clusterBounds = buildTerrainClusterBounds(vertices, indices, frame);
     const clusterCount = clusterBounds.length / 4;
     const chunk = this.terrainArena.uploadChunk(
@@ -2867,10 +2750,9 @@ export class Renderer {
       indices,
       frame,
       clusterBounds,
-      renderBounds,
+      bounds,
       nextStats,
       lodSeamMask,
-      seammed.skirtTriangles,
     );
     chunk.clusterCount = clusterCount;
     this.chunks.set(key, chunk);
@@ -3252,7 +3134,6 @@ export class Renderer {
     let terrainLod1Chunks = 0;
     let terrainLod2PlusChunks = 0;
     let terrainLodTransitionEdges = 0;
-    let terrainLodSkirtTriangles = 0;
     let terrainLodTransitionMeshChunks = 0;
     let terrainLodTransitionMeshTriangles = 0;
     for (const chunk of this.chunks.values()) {
@@ -3266,7 +3147,6 @@ export class Renderer {
         else if (lod === 1) terrainLod1Chunks++;
         else terrainLod2PlusChunks++;
         terrainLodTransitionEdges += countLodTransitionEdges(chunk.lodSeamMask);
-        terrainLodSkirtTriangles += chunk.lodSeamSkirtTriangles;
       }
     }
     const chunkMeshBytes = this.terrainArena?.gpuBytes() ?? 0;
@@ -3296,7 +3176,6 @@ export class Renderer {
       terrainLod1Chunks,
       terrainLod2PlusChunks,
       terrainLodTransitionEdges,
-      terrainLodSkirtTriangles,
       terrainLodTransitionMeshChunks,
       terrainLodTransitionMeshTriangles,
       terrainClusterCount,

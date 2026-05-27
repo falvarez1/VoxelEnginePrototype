@@ -25,7 +25,6 @@ export interface ChunkMeshStats {
   densityScale?: number;
   lod?: number;
   lodSeamMask?: number;
-  lodSeamSkirtTriangles?: number;
   lodTransitionMesh?: boolean;
   lodTransitionMeshCells?: number;
   lodTransitionMeshEmittedCells?: number;
@@ -251,7 +250,6 @@ export interface EngineSettings {
   streamRadius: number;
   streamingEnabled: boolean;
   terrainLodEnabled: boolean;
-  lodSeamSkirtsEnabled: boolean;
   nearTerrainEnabled: boolean;
   farTerrainEnabled: boolean;
   waterEnabled: boolean;
@@ -296,7 +294,6 @@ export interface RendererSettings {
   farTerrainEnabled: boolean;
   waterEnabled: boolean;
   vegetationEnabled: boolean;
-  lodSeamSkirtsEnabled: boolean;
   fogDensity: number;
   materialDetail: number;
   exposure: number;
@@ -366,7 +363,6 @@ export interface RendererMemoryStats {
   terrainLod1Chunks: number;
   terrainLod2PlusChunks: number;
   terrainLodTransitionEdges: number;
-  terrainLodSkirtTriangles: number;
   terrainLodTransitionMeshChunks: number;
   terrainLodTransitionMeshTriangles: number;
   terrainClusterCount: number;
@@ -556,7 +552,6 @@ export interface RuntimeProfile {
   terrainLod1Chunks: number;
   terrainLod2PlusChunks: number;
   terrainLodTransitionEdges: number;
-  terrainLodSkirtTriangles: number;
   terrainLodTransitionMeshChunks: number;
   terrainLodTransitionMeshTriangles: number;
   terrainClusterCount: number;
