@@ -51,6 +51,7 @@ interface VoxelCoreExports {
   generate_chunk(cx: number, cy: number, cz: number, lod: number): number;
   mesh_cached_chunk(cx: number, cy: number, cz: number, lod: number): number;
   generate_lod_transition_cell_mesh(side: number): number;
+  generate_lod_transition_chunk_mesh(cellCount: number): number;
   set_chunk_lod(lod: number): void;
   get_chunk_lod(): number;
   apply_subtract_sphere_to_density(cx: number, cy: number, cz: number, x: number, y: number, z: number, radius: number): number;
@@ -78,6 +79,14 @@ interface VoxelCoreExports {
   get_density_ptr(): number;
   get_lod_transition_position_ptr(): number;
   get_lod_transition_density_ptr(): number;
+  get_lod_transition_chunk_position_ptr(): number;
+  get_lod_transition_chunk_density_ptr(): number;
+  get_lod_transition_chunk_sides_ptr(): number;
+  get_lod_transition_max_chunk_cells(): number;
+  get_pack_origin_x(): number;
+  get_pack_origin_y(): number;
+  get_pack_origin_z(): number;
+  get_pack_scale(): number;
   get_overflow(): number;
   get_vertex_stride(): number;
   get_density_stride(): number;
@@ -789,27 +798,6 @@ async function remeshDensity(job: RemeshDensityMessage): Promise<void> {
   collectChunkResult(e, job, t0, true);
 }
 
-function transitionCellFrame(samples: Float32Array, cellOffset: number): { origin: [number, number, number]; scale: number } {
-  let minX = samples[cellOffset + 0];
-  let minY = samples[cellOffset + 1];
-  let minZ = samples[cellOffset + 2];
-  let maxX = minX;
-  let maxY = minY;
-  let maxZ = minZ;
-  for (let sample = 1; sample < 12; sample++) {
-    const offset = cellOffset + sample * 4;
-    const x = samples[offset + 0];
-    const y = samples[offset + 1];
-    const z = samples[offset + 2];
-    minX = Math.min(minX, x); minY = Math.min(minY, y); minZ = Math.min(minZ, z);
-    maxX = Math.max(maxX, x); maxY = Math.max(maxY, y); maxZ = Math.max(maxZ, z);
-  }
-  return {
-    origin: [minX, minY, minZ],
-    scale: Math.max(maxX - minX, maxY - minY, maxZ - minZ, 1),
-  };
-}
-
 async function generateLodTransitionMesh(msg: GenerateLodTransitionMeshMessage): Promise<void> {
   await init();
   const e = core();
@@ -828,56 +816,14 @@ async function generateLodTransitionMesh(msg: GenerateLodTransitionMeshMessage):
   if (msg.combinedCases.length !== nativeCellCount) {
     throw new Error(`LOD transition case payload mismatch: ${msg.combinedCases.length} cases for ${nativeCellCount} cells`);
   }
-
-  const positionView = new Float32Array(e.memory.buffer, e.get_lod_transition_position_ptr(), sampleCount * 3);
-  const densityView = new Float32Array(e.memory.buffer, e.get_lod_transition_density_ptr(), sampleCount);
-  const vertexStride = e.get_vertex_stride();
-  const worldPositions: number[] = [];
-  const vertexAttrs: number[] = [];
-  const aggregateIndices: number[] = [];
-  let emittedCells = 0;
-  let degenerateCells = 0;
-  let overflow = 0;
-
-  for (let cell = 0; cell < nativeCellCount; cell++) {
-    const cellOffset = cell * floatsPerCell;
-    for (let sample = 0; sample < sampleCount; sample++) {
-      const src = cellOffset + sample * 4;
-      const pos = sample * 3;
-      positionView[pos + 0] = msg.samples[src + 0];
-      positionView[pos + 1] = msg.samples[src + 1];
-      positionView[pos + 2] = msg.samples[src + 2];
-      densityView[sample] = msg.samples[src + 3];
-    }
-    const cellFrame = transitionCellFrame(msg.samples, cellOffset);
-    e.generate_lod_transition_cell_mesh(msg.sides[cell]);
-    overflow += e.get_overflow() ? 1 : 0;
-    const vertexCount = e.get_vertex_count();
-    const indexCount = e.get_index_count();
-    if (vertexCount <= 0 || indexCount < 3) {
-      degenerateCells++;
-      continue;
-    }
-    emittedCells++;
-    const vertexBase = worldPositions.length / 3;
-    const vertexBytes = new Uint8Array(e.memory.buffer, e.get_vertex_ptr(), vertexCount * vertexStride);
-    const vertexView = new DataView(vertexBytes.buffer, vertexBytes.byteOffset, vertexBytes.byteLength);
-    for (let vertex = 0; vertex < vertexCount; vertex++) {
-      const offset = vertex * vertexStride;
-      worldPositions.push(
-        cellFrame.origin[0] + (vertexView.getUint16(offset + 0, true) / 65535) * cellFrame.scale,
-        cellFrame.origin[1] + (vertexView.getUint16(offset + 2, true) / 65535) * cellFrame.scale,
-        cellFrame.origin[2] + (vertexView.getUint16(offset + 4, true) / 65535) * cellFrame.scale,
-      );
-      for (let attr = 8; attr < 16; attr++) vertexAttrs.push(vertexBytes[offset + attr]);
-    }
-    const cellIndices = new Uint32Array(e.memory.buffer, e.get_index_ptr(), indexCount);
-    for (let index = 0; index < cellIndices.length; index++) {
-      aggregateIndices.push(vertexBase + cellIndices[index]);
-    }
+  const maxChunkCells = e.get_lod_transition_max_chunk_cells();
+  if (nativeCellCount > maxChunkCells) {
+    throw new Error(`LOD transition chunk capacity ${maxChunkCells} exceeded by ${nativeCellCount} cells`);
   }
 
-  if (worldPositions.length === 0 || aggregateIndices.length < 3) {
+  const vertexStride = e.get_vertex_stride();
+
+  const emptyResult = (degenerateCells: number, overflow: number): void => {
     const empty: LodTransitionMeshMessage = {
       type: 'lodTransitionMesh',
       signature: msg.signature,
@@ -900,38 +846,69 @@ async function generateLodTransitionMesh(msg: GenerateLodTransitionMeshMessage):
       },
     };
     workerSelf.postMessage(empty);
+  };
+
+  if (nativeCellCount === 0) {
+    emptyResult(0, 0);
     return;
   }
 
-  let minX = worldPositions[0], minY = worldPositions[1], minZ = worldPositions[2];
-  let maxX = minX, maxY = minY, maxZ = minZ;
-  for (let i = 0; i < worldPositions.length; i += 3) {
-    const x = worldPositions[i];
-    const y = worldPositions[i + 1];
-    const z = worldPositions[i + 2];
-    minX = Math.min(minX, x); minY = Math.min(minY, y); minZ = Math.min(minZ, z);
-    maxX = Math.max(maxX, x); maxY = Math.max(maxY, y); maxZ = Math.max(maxZ, z);
-  }
-  const frame = {
-    origin: [minX, minY, minZ] as [number, number, number],
-    scale: Math.max(maxX - minX, maxY - minY, maxZ - minZ, 1),
-  };
-  const vertexCount = worldPositions.length / 3;
-  const vertices = new Uint8Array(vertexCount * vertexStride);
-  const finalVertexView = new DataView(vertices.buffer);
-  const invScale = 1 / frame.scale;
-  for (let vertex = 0; vertex < vertexCount; vertex++) {
-    const src = vertex * 3;
-    const dst = vertex * vertexStride;
-    finalVertexView.setUint16(dst + 0, Math.round(Math.max(0, Math.min(1, (worldPositions[src + 0] - frame.origin[0]) * invScale)) * 65535), true);
-    finalVertexView.setUint16(dst + 2, Math.round(Math.max(0, Math.min(1, (worldPositions[src + 1] - frame.origin[1]) * invScale)) * 65535), true);
-    finalVertexView.setUint16(dst + 4, Math.round(Math.max(0, Math.min(1, (worldPositions[src + 2] - frame.origin[2]) * invScale)) * 65535), true);
-    finalVertexView.setUint16(dst + 6, 0, true);
-    const attrSrc = vertex * 8;
-    for (let attr = 0; attr < 8; attr++) vertices[dst + 8 + attr] = vertexAttrs[attrSrc + attr];
+  const chunkPositionsView = new Float32Array(
+    e.memory.buffer,
+    e.get_lod_transition_chunk_position_ptr(),
+    nativeCellCount * sampleCount * 3,
+  );
+  const chunkDensitiesView = new Float32Array(
+    e.memory.buffer,
+    e.get_lod_transition_chunk_density_ptr(),
+    nativeCellCount * sampleCount,
+  );
+  const chunkSidesView = new Int32Array(
+    e.memory.buffer,
+    e.get_lod_transition_chunk_sides_ptr(),
+    nativeCellCount,
+  );
+  for (let cell = 0; cell < nativeCellCount; cell++) {
+    const srcBase = cell * floatsPerCell;
+    const posBase = cell * sampleCount * 3;
+    const denBase = cell * sampleCount;
+    for (let sample = 0; sample < sampleCount; sample++) {
+      const src = srcBase + sample * 4;
+      const pos = posBase + sample * 3;
+      chunkPositionsView[pos + 0] = msg.samples[src + 0];
+      chunkPositionsView[pos + 1] = msg.samples[src + 1];
+      chunkPositionsView[pos + 2] = msg.samples[src + 2];
+      chunkDensitiesView[denBase + sample] = msg.samples[src + 3];
+    }
+    chunkSidesView[cell] = msg.sides[cell];
   }
 
-  const indices = new Uint32Array(aggregateIndices);
+  const aggregateVertexCount = e.generate_lod_transition_chunk_mesh(nativeCellCount);
+  const overflow = e.get_overflow() ? 1 : 0;
+  const aggregateIndexCount = e.get_index_count();
+  if (aggregateVertexCount <= 0 || aggregateIndexCount < 3) {
+    emptyResult(nativeCellCount, overflow);
+    return;
+  }
+
+  const packedSrc = new Uint8Array(e.memory.buffer, e.get_vertex_ptr(), aggregateVertexCount * vertexStride);
+  const indicesSrc = new Uint32Array(e.memory.buffer, e.get_index_ptr(), aggregateIndexCount);
+  const vertices = new Uint8Array(packedSrc);
+  const indices = new Uint32Array(indicesSrc);
+
+  const frame = {
+    origin: [e.get_pack_origin_x(), e.get_pack_origin_y(), e.get_pack_origin_z()] as [number, number, number],
+    scale: e.get_pack_scale(),
+  };
+  const minX = e.get_bounds_min_x();
+  const minY = e.get_bounds_min_y();
+  const minZ = e.get_bounds_min_z();
+  const maxX = e.get_bounds_max_x();
+  const maxY = e.get_bounds_max_y();
+  const maxZ = e.get_bounds_max_z();
+  const vertexCount = aggregateVertexCount;
+  const emittedCells = nativeCellCount;
+  const degenerateCells = 0;
   const message: LodTransitionMeshMessage = {
     type: 'lodTransitionMesh',
     signature: msg.signature,
