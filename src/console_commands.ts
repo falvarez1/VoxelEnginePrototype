@@ -171,6 +171,17 @@ export interface ConsoleDeps {
   game: GameLike;
   worldgenProbe?: WorldgenProbeFn;
   reload(): void;
+  editLogSnapshot?(): { active: unknown[]; redo: unknown[]; branches: unknown[]; activeVersion: number; nextEditId: number };
+  brushPresetList?(): Array<{ id: string; label: string }>;
+  applyBrushPreset?(id: string): boolean;
+  deleteBrushPreset?(id: string): boolean;
+  regionSlotList?(): Array<{ index: number; key: string; name: string; chunks?: number; edits?: number; savedAt?: number }>;
+  tileCacheStats?(name: 'chunk' | 'worldgen' | 'erosion' | 'material' | 'cave'): Record<string, unknown> | null;
+  poolStats?(): Record<string, unknown>;
+  autoQualityState?(): Record<string, unknown>;
+  benchmarkHistory?(): unknown[];
+  screenshot?(filename?: string): Promise<void>;
+  canvas?(): HTMLCanvasElement | null;
 }
 
 function describeNumber(value: number, decimals = 3): string {
@@ -755,6 +766,352 @@ export function registerEngineConsoleCommands(console: EngineConsole, deps: Cons
     name: 'echo',
     description: 'Print arguments back to the console.',
     handler: (args) => args.join(' '),
+  });
+
+  console.register({
+    name: 'edits',
+    description: 'Print recent edit log entries. edits [count] [-r=N redo] [-b=N branches]',
+    usage: '[count]',
+    handler: (args, ctx) => {
+      if (!deps.editLogSnapshot) { ctx.error('Edit log snapshot is unavailable.'); return; }
+      const count = parseNumber(args[0]) ?? 10;
+      const snap = deps.editLogSnapshot();
+      ctx.log(`activeVersion=${snap.activeVersion}, nextEditId=${snap.nextEditId}, active=${snap.active.length}, redo=${snap.redo.length}, branches=${snap.branches.length}`);
+      const limit = Math.max(1, Math.round(count));
+      const active = snap.active.slice(-limit).reverse();
+      if (active.length > 0) {
+        ctx.log('recent active edits:');
+        for (const edit of active) ctx.log(`  ${formatJson(edit, 4)}`);
+      }
+    },
+  });
+
+  console.register({
+    name: 'branches',
+    description: 'List archived edit branches.',
+    handler: (_args, ctx) => {
+      if (!deps.editLogSnapshot) { ctx.error('Edit log snapshot is unavailable.'); return; }
+      const snap = deps.editLogSnapshot();
+      if (snap.branches.length === 0) { ctx.log('No archived branches.'); return; }
+      for (const branch of snap.branches) ctx.log(`  ${formatJson(branch, 4)}`);
+    },
+  });
+
+  console.register({
+    name: 'regions',
+    description: 'List managed region slots.',
+    handler: (_args, ctx) => {
+      if (!deps.regionSlotList) { ctx.error('Region slot list is unavailable.'); return; }
+      const slots = deps.regionSlotList();
+      if (slots.length === 0) { ctx.log('No region slots.'); return; }
+      for (const slot of slots) {
+        const saved = slot.savedAt ? new Date(slot.savedAt).toISOString() : '(empty)';
+        ctx.log(`  [${slot.index}] ${slot.key} "${slot.name}" chunks=${slot.chunks ?? 0} edits=${slot.edits ?? 0} ${saved}`);
+      }
+    },
+  });
+
+  console.register({
+    name: 'presets',
+    description: 'Brush preset operations.',
+    usage: '<list|apply|delete> [id]',
+    handler: (args, ctx) => {
+      const sub = (args[0] ?? 'list').toLowerCase();
+      if (sub === 'list') {
+        if (!deps.brushPresetList) { ctx.error('Preset list unavailable.'); return; }
+        const list = deps.brushPresetList();
+        if (list.length === 0) { ctx.log('No brush presets.'); return; }
+        for (const preset of list) ctx.log(`  ${preset.id}  ${preset.label}`);
+        return;
+      }
+      if (sub === 'apply') {
+        if (!requireArgs(args, 2, ctx, 'presets apply <id>')) return;
+        if (!deps.applyBrushPreset) { ctx.error('applyBrushPreset unavailable.'); return; }
+        const ok = deps.applyBrushPreset(args[1]);
+        ctx.log(ok ? `applied ${args[1]}` : `unknown preset: ${args[1]}`);
+        return;
+      }
+      if (sub === 'delete') {
+        if (!requireArgs(args, 2, ctx, 'presets delete <id>')) return;
+        if (!deps.deleteBrushPreset) { ctx.error('deleteBrushPreset unavailable.'); return; }
+        const ok = deps.deleteBrushPreset(args[1]);
+        ctx.log(ok ? `deleted ${args[1]}` : `unknown preset: ${args[1]}`);
+        return;
+      }
+      ctx.error('presets <list|apply|delete> [id]');
+    },
+  });
+
+  for (const cacheName of ['chunk', 'worldgen', 'erosion', 'material', 'cave'] as const) {
+    console.register({
+      name: `${cacheName}-cache`,
+      description: `Print ${cacheName} cache stats.`,
+      handler: (_args, ctx) => {
+        if (!deps.tileCacheStats) { ctx.error('Cache stats unavailable.'); return; }
+        const stats = deps.tileCacheStats(cacheName);
+        if (!stats) { ctx.error(`No stats for "${cacheName}" cache.`); return; }
+        ctx.log(formatJson(stats, 120));
+      },
+    });
+  }
+
+  console.register({
+    name: 'caches',
+    description: 'Print stats for all tile caches at once.',
+    handler: (_args, ctx) => {
+      if (!deps.tileCacheStats) { ctx.error('Cache stats unavailable.'); return; }
+      for (const name of ['chunk', 'worldgen', 'erosion', 'material', 'cave'] as const) {
+        const stats = deps.tileCacheStats(name);
+        if (!stats) continue;
+        ctx.log(`-- ${name} cache --`);
+        ctx.log(formatJson(stats, 40));
+      }
+    },
+  });
+
+  console.register({
+    name: 'pool',
+    description: 'Typed-array pool stats from streamer.lastStats.',
+    handler: (_args, ctx) => {
+      if (!deps.poolStats) {
+        const stats = deps.streamer.lastStats;
+        const pooled = {
+          pooledArrays: stats.pooledArrays,
+          pooledMB: stats.pooledMB,
+          poolHits: stats.poolHits,
+          poolMisses: stats.poolMisses,
+          workerScratchMB: stats.workerScratchMB,
+          workerScratchReuses: stats.workerScratchReuses,
+        };
+        ctx.log(formatJson(pooled));
+        return;
+      }
+      ctx.log(formatJson(deps.poolStats(), 40));
+    },
+  });
+
+  console.register({
+    name: 'auto-quality',
+    description: 'Print current auto-quality state.',
+    aliases: ['autoq'],
+    handler: (_args, ctx) => {
+      if (!deps.autoQualityState) { ctx.error('Auto-quality state unavailable.'); return; }
+      ctx.log(formatJson(deps.autoQualityState(), 40));
+    },
+  });
+
+  console.register({
+    name: 'benchmarks',
+    description: 'List recent browser-worker benchmark captures.',
+    aliases: ['bench-history'],
+    handler: (_args, ctx) => {
+      if (!deps.benchmarkHistory) { ctx.error('Benchmark history unavailable.'); return; }
+      const list = deps.benchmarkHistory();
+      if (list.length === 0) { ctx.log('No recorded benchmarks.'); return; }
+      ctx.log(`${list.length} benchmark capture(s):`);
+      ctx.log(formatJson(list.slice(0, 4), 80));
+    },
+  });
+
+  console.register({
+    name: 'state',
+    description: 'Compact engine state snapshot: camera, settings, stats, profile.',
+    handler: (_args, ctx) => {
+      ctx.log('camera:');
+      ctx.log(`  pos=[${Array.from(deps.camera.position).map(v => describeNumber(v)).join(', ')}] yaw=${describeNumber(deps.camera.yaw)} pitch=${describeNumber(deps.camera.pitch)} fov=${describeNumber(deps.camera.fovDegrees, 1)}`);
+      const counts = deps.streamer.counts();
+      ctx.log(`streamer: queued=${counts.queued} pending=${counts.pending} loaded=${counts.loaded} workers=${counts.workers} idle=${counts.idle}`);
+      ctx.log(`profile: frame=${describeNumber(deps.profiler.last.avgFrameMs, 2)}ms uploadMB=${describeNumber(deps.profiler.last.avgUploadMB)} gpuMB=${describeNumber(deps.profiler.last.estimatedGpuMB)}`);
+      ctx.log(`settings keys: ${Object.keys(deps.defaultSettings).length}`);
+    },
+  });
+
+  console.register({
+    name: 'pause',
+    description: 'Pause animation (sets animationSpeed=0).',
+    handler: () => {
+      deps.setSettings({ ...deps.getSettings(), animationSpeed: 0 }, 'animationSpeed');
+      return 'paused';
+    },
+  });
+
+  console.register({
+    name: 'unpause',
+    description: 'Resume animation (sets animationSpeed=1).',
+    aliases: ['resume'],
+    handler: () => {
+      deps.setSettings({ ...deps.getSettings(), animationSpeed: 1 }, 'animationSpeed');
+      return 'resumed';
+    },
+  });
+
+  console.register({
+    name: 'time',
+    description: 'Set animation speed multiplier.',
+    usage: '<multiplier>',
+    handler: (args, ctx) => {
+      if (!requireArgs(args, 1, ctx, 'time <multiplier>')) return;
+      const v = parseNumber(args[0]);
+      if (v === null) { ctx.error('time expects a number'); return; }
+      deps.setSettings({ ...deps.getSettings(), animationSpeed: v }, 'animationSpeed');
+      ctx.log(`animationSpeed=${v}`);
+    },
+  });
+
+  console.register({
+    name: 'screenshot',
+    description: 'Save the canvas as a PNG via toBlob.',
+    usage: '[filename]',
+    handler: async (args, ctx) => {
+      if (deps.screenshot) {
+        await deps.screenshot(args[0]);
+        return 'screenshot saved';
+      }
+      if (!deps.canvas) { ctx.error('Canvas access unavailable.'); return; }
+      const canvas = deps.canvas();
+      if (!canvas) { ctx.error('Canvas not found.'); return; }
+      await new Promise<void>((resolve, reject) => {
+        canvas.toBlob((blob) => {
+          if (!blob) { reject(new Error('toBlob returned null')); return; }
+          const url = URL.createObjectURL(blob);
+          const link = document.createElement('a');
+          link.href = url;
+          link.download = args[0] ?? `storm-canyon-${Date.now()}.png`;
+          link.click();
+          window.setTimeout(() => URL.revokeObjectURL(url), 5000);
+          resolve();
+        }, 'image/png');
+      });
+      return 'screenshot saved';
+    },
+  });
+
+  console.register({
+    name: 'alias',
+    description: 'Define a command alias. alias <name> <body...>',
+    usage: '<name> <body...>',
+    handler: (args, ctx) => {
+      if (!requireArgs(args, 2, ctx, 'alias <name> <body...>')) return;
+      const name = args[0];
+      const body = args.slice(1).join(' ');
+      console.setAlias(name, body);
+      ctx.log(`alias ${name} -> ${body}`);
+    },
+  });
+
+  console.register({
+    name: 'aliases',
+    description: 'List defined aliases.',
+    handler: (_args, ctx) => {
+      const list = console.listAliases();
+      if (list.length === 0) { ctx.log('No aliases defined.'); return; }
+      for (const a of list) ctx.log(`  ${a.name} -> ${a.body}`);
+    },
+  });
+
+  console.register({
+    name: 'unalias',
+    description: 'Remove a command alias.',
+    usage: '<name>',
+    handler: (args, ctx) => {
+      if (!requireArgs(args, 1, ctx, 'unalias <name>')) return;
+      ctx.log(console.removeAlias(args[0]) ? `removed alias ${args[0]}` : `no such alias: ${args[0]}`);
+    },
+  });
+
+  console.register({
+    name: 'history',
+    description: 'Print recent command history.',
+    usage: '[count]',
+    handler: (args, ctx) => {
+      const limit = parseNumber(args[0]) ?? 20;
+      const hist = console.getHistory(Math.max(1, Math.round(limit)));
+      if (hist.length === 0) { ctx.log('No history.'); return; }
+      hist.forEach((line, i) => ctx.log(`  ${i + 1}. ${line}`));
+    },
+  });
+
+  console.register({
+    name: 'watch',
+    description: 'Run a command repeatedly. watch <intervalMs> <cmd...>',
+    usage: '<intervalMs> <cmd...>',
+    handler: (args, ctx) => {
+      if (!requireArgs(args, 2, ctx, 'watch <intervalMs> <cmd...>')) return;
+      const interval = parseNumber(args[0]);
+      if (interval === null) { ctx.error('watch expects an interval in ms as the first argument'); return; }
+      const command = args.slice(1).join(' ');
+      const id = console.startWatcher(command, interval);
+      ctx.log(`watch[${id}] every ${Math.max(200, Math.round(interval))}ms: ${command}`);
+    },
+  });
+
+  console.register({
+    name: 'unwatch',
+    description: 'Stop a watcher (or all of them).',
+    usage: '[id|all]',
+    handler: (args, ctx) => {
+      if (args.length === 0 || args[0].toLowerCase() === 'all') {
+        const n = console.stopAllWatchers();
+        ctx.log(`stopped ${n} watcher(s)`);
+        return;
+      }
+      const id = parseNumber(args[0]);
+      if (id === null) { ctx.error('unwatch <id> or "unwatch all"'); return; }
+      ctx.log(console.stopWatcher(Math.round(id)) ? `stopped watcher ${id}` : `no watcher with id ${id}`);
+    },
+  });
+
+  console.register({
+    name: 'watchers',
+    description: 'List active watchers.',
+    handler: (_args, ctx) => {
+      const list = console.listWatchers();
+      if (list.length === 0) { ctx.log('No watchers.'); return; }
+      for (const w of list) ctx.log(`  [${w.id}] every ${w.intervalMs}ms: ${w.command}`);
+    },
+  });
+
+  console.register({
+    name: 'loop',
+    description: 'Run a command N times. loop <n> <cmd...>',
+    usage: '<n> <cmd...>',
+    handler: async (args, ctx) => {
+      if (!requireArgs(args, 2, ctx, 'loop <n> <cmd...>')) return;
+      const n = parseNumber(args[0]);
+      if (n === null || n <= 0) { ctx.error('loop expects a positive count'); return; }
+      const command = args.slice(1).join(' ');
+      const count = Math.min(1000, Math.max(1, Math.round(n)));
+      for (let i = 0; i < count; i++) await console.execute(command);
+      ctx.log(`loop done (${count} iterations)`);
+    },
+  });
+
+  console.register({
+    name: 'run',
+    description: 'Run multiple commands separated by semicolons.',
+    usage: '<cmd>; <cmd>; ...',
+    handler: async (args) => { await console.execute(args.join(' ')); },
+  });
+
+  console.register({
+    name: 'seek',
+    description: 'Increment streamRadius by a delta (can be negative).',
+    usage: '<delta>',
+    handler: (args, ctx) => {
+      if (!requireArgs(args, 1, ctx, 'seek <delta>')) return;
+      const delta = parseNumber(args[0]);
+      if (delta === null) { ctx.error('seek expects a number'); return; }
+      const next = Math.round(deps.getSettings().streamRadius + delta);
+      deps.setSettings({ ...deps.getSettings(), streamRadius: next }, 'streamRadius');
+      ctx.log(`streamRadius=${next}`);
+    },
+  });
+
+  console.register({
+    name: 'mark',
+    description: 'Drop a labeled marker into the console output for visual scanning.',
+    usage: '[label]',
+    handler: (args) => `=== ${args.join(' ') || 'mark'} === @ ${new Date().toISOString()}`,
   });
 
   console.register({

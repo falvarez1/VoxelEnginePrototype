@@ -7022,6 +7022,67 @@ async function main() {
       return snapshot.camera as unknown as Record<string, number | string>;
     },
     reload: () => window.location.reload(),
+    editLogSnapshot: () => ({
+      active: streamer.editLog as unknown as unknown[],
+      redo: streamer.undoneEdits as unknown as unknown[],
+      branches: streamer.editBranches as unknown as unknown[],
+      activeVersion: streamer.editVersion,
+      nextEditId: streamer.nextEditId,
+    }),
+    brushPresetList: () => brushPresets.map(preset => ({ id: preset.id, label: preset.name })),
+    applyBrushPreset: (id) => {
+      if (!brushPresets.some(preset => preset.id === id)) return false;
+      applyBrushPreset(id);
+      return true;
+    },
+    deleteBrushPreset: (id) => {
+      if (!brushPresets.some(preset => preset.id === id)) return false;
+      deleteBrushPreset(id);
+      return true;
+    },
+    regionSlotList: () => REGION_SLOTS.map((slot, index) => {
+      const name = regionSlotFromSettings({ ...settings, regionSlot: index }).name;
+      return { index, key: slot.key, name };
+    }),
+    tileCacheStats: (name) => {
+      if (name === 'chunk') {
+        const s = streamer.lastStats;
+        return {
+          cacheEntries: s.cacheEntries,
+          cacheMB: s.cacheMB,
+          cacheHits: s.cacheHits,
+          cacheMisses: s.cacheMisses,
+          pooledArrays: s.pooledArrays,
+          pooledMB: s.pooledMB,
+          poolHits: s.poolHits,
+          poolMisses: s.poolMisses,
+        };
+      }
+      if (name === 'worldgen') return worldgenTileCache.stats() as unknown as Record<string, unknown>;
+      if (name === 'erosion') return erosionTileCache.stats() as unknown as Record<string, unknown>;
+      if (name === 'material') return materialTileCache.stats() as unknown as Record<string, unknown>;
+      if (name === 'cave') return caveGraphTileCache.stats() as unknown as Record<string, unknown>;
+      return null;
+    },
+    poolStats: () => ({
+      pooledArrays: streamer.lastStats.pooledArrays,
+      pooledMB: streamer.lastStats.pooledMB,
+      poolHits: streamer.lastStats.poolHits,
+      poolMisses: streamer.lastStats.poolMisses,
+      workerScratchMB: streamer.lastStats.workerScratchMB,
+      workerScratchReuses: streamer.lastStats.workerScratchReuses,
+      workerTransferMB: streamer.lastStats.workerTransferMB,
+      workerTransferAllocations: streamer.lastStats.workerTransferAllocations,
+      sharedResultSlotCapacity: streamer.lastStats.sharedResultSlotCapacity,
+      sharedResultSlotOccupied: streamer.lastStats.sharedResultSlotOccupied,
+      sharedResultSlotExhaustions: streamer.lastStats.sharedResultSlotExhaustions,
+      sharedResultSlotReleases: streamer.lastStats.sharedResultSlotReleases,
+      remeshFallbackDispatches: streamer.lastStats.remeshFallbackDispatches,
+      remeshFallbackBytes: streamer.lastStats.remeshFallbackBytes,
+    }),
+    autoQualityState: () => serializeAutoQualityState(autoQualityState) as unknown as Record<string, unknown>,
+    benchmarkHistory: () => browserWorkerBenchmarkCaptures as unknown as unknown[],
+    canvas: () => canvas,
   });
   (window as unknown as { __stormCanyonConsole?: EngineConsole }).__stormCanyonConsole = engineConsole;
 

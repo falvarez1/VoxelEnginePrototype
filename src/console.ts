@@ -50,8 +50,18 @@ function tokenize(line: string): string[] {
   return tokens;
 }
 
+interface ConsoleWatcher {
+  id: number;
+  command: string;
+  intervalMs: number;
+  timer: number;
+}
+
 export class EngineConsole {
   private commands = new Map<string, ConsoleCommand>();
+  private aliases = new Map<string, string>();
+  private watchers = new Map<number, ConsoleWatcher>();
+  private nextWatcherId = 1;
   private root: HTMLDivElement;
   private outputEl: HTMLDivElement;
   private inputEl: HTMLInputElement;
@@ -261,7 +271,16 @@ export class EngineConsole {
   }
 
   async execute(line: string): Promise<void> {
-    const tokens = tokenize(line);
+    const trimmed = line.trim();
+    if (trimmed.length === 0) return;
+    if (trimmed.includes(';')) {
+      for (const segment of trimmed.split(';')) {
+        const sub = segment.trim();
+        if (sub.length > 0) await this.execute(sub);
+      }
+      return;
+    }
+    const tokens = tokenize(trimmed);
     if (tokens.length === 0) return;
     const name = (tokens[0] ?? '').toLowerCase();
     if (name === 'help') {
@@ -271,6 +290,13 @@ export class EngineConsole {
     if (name === 'clear') {
       this.outputEl.replaceChildren();
       this.lines = [];
+      return;
+    }
+    const aliasBody = this.aliases.get(name);
+    if (aliasBody) {
+      const remainder = tokens.slice(1).join(' ');
+      const expanded = remainder.length > 0 ? `${aliasBody} ${remainder}` : aliasBody;
+      await this.execute(expanded);
       return;
     }
     const cmd = this.commands.get(name);
@@ -288,6 +314,54 @@ export class EngineConsole {
     } catch (error) {
       this.error(error instanceof Error ? error.message : String(error));
     }
+  }
+
+  setAlias(name: string, body: string): void {
+    const key = name.toLowerCase();
+    if (body.length === 0) this.aliases.delete(key);
+    else this.aliases.set(key, body);
+  }
+
+  removeAlias(name: string): boolean {
+    return this.aliases.delete(name.toLowerCase());
+  }
+
+  listAliases(): Array<{ name: string; body: string }> {
+    return Array.from(this.aliases.entries(), ([name, body]) => ({ name, body }));
+  }
+
+  getHistory(limit?: number): string[] {
+    if (limit === undefined) return [...this.history];
+    return this.history.slice(-limit);
+  }
+
+  startWatcher(command: string, intervalMs: number): number {
+    const id = this.nextWatcherId++;
+    const safeInterval = Math.max(200, Math.round(intervalMs));
+    const timer = window.setInterval(() => {
+      void this.execute(command);
+    }, safeInterval);
+    this.watchers.set(id, { id, command, intervalMs: safeInterval, timer });
+    return id;
+  }
+
+  stopWatcher(id: number): boolean {
+    const watcher = this.watchers.get(id);
+    if (!watcher) return false;
+    window.clearInterval(watcher.timer);
+    this.watchers.delete(id);
+    return true;
+  }
+
+  stopAllWatchers(): number {
+    const count = this.watchers.size;
+    for (const watcher of this.watchers.values()) window.clearInterval(watcher.timer);
+    this.watchers.clear();
+    return count;
+  }
+
+  listWatchers(): Array<{ id: number; command: string; intervalMs: number }> {
+    return Array.from(this.watchers.values()).map(({ id, command, intervalMs }) => ({ id, command, intervalMs }));
   }
 
   private printHelp(filter?: string): void {
