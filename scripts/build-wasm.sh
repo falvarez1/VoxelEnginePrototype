@@ -40,6 +40,7 @@ fi
   -Wl,--export=generate_chunk \
   -Wl,--export=mesh_cached_chunk \
   -Wl,--export=generate_lod_transition_cell_mesh \
+  -Wl,--export=generate_lod_transition_chunk_mesh \
   -Wl,--export=apply_subtract_sphere_to_density \
   -Wl,--export=apply_add_sphere_to_density \
   -Wl,--export=apply_subtract_box_to_density \
@@ -63,6 +64,14 @@ fi
   -Wl,--export=get_density_ptr \
   -Wl,--export=get_lod_transition_position_ptr \
   -Wl,--export=get_lod_transition_density_ptr \
+  -Wl,--export=get_lod_transition_chunk_position_ptr \
+  -Wl,--export=get_lod_transition_chunk_density_ptr \
+  -Wl,--export=get_lod_transition_chunk_sides_ptr \
+  -Wl,--export=get_lod_transition_max_chunk_cells \
+  -Wl,--export=get_pack_origin_x \
+  -Wl,--export=get_pack_origin_y \
+  -Wl,--export=get_pack_origin_z \
+  -Wl,--export=get_pack_scale \
   -Wl,--export=get_vertex_count \
   -Wl,--export=get_index_count \
   -Wl,--export=get_density_count \

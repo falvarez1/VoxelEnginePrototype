@@ -10,6 +10,7 @@ const required = [
   'generate_chunk',
   'mesh_cached_chunk',
   'generate_lod_transition_cell_mesh',
+  'generate_lod_transition_chunk_mesh',
   'apply_subtract_sphere_to_density',
   'apply_add_sphere_to_density',
   'apply_subtract_box_to_density',
@@ -35,6 +36,14 @@ const required = [
   'get_density_ptr',
   'get_lod_transition_position_ptr',
   'get_lod_transition_density_ptr',
+  'get_lod_transition_chunk_position_ptr',
+  'get_lod_transition_chunk_density_ptr',
+  'get_lod_transition_chunk_sides_ptr',
+  'get_lod_transition_max_chunk_cells',
+  'get_pack_origin_x',
+  'get_pack_origin_y',
+  'get_pack_origin_z',
+  'get_pack_scale',
   'get_density_count',
   'get_lod_transition_sample_count',
   'get_lod_transition_algorithm_id',
@@ -280,6 +289,110 @@ for (const side of [0, 1, 2, 3]) {
   }
   transitionMeshSummaries.push(`${vertexCount}v/${indexCount / 3}t`);
 }
+
+const maxChunkCells = e.get_lod_transition_max_chunk_cells();
+if (maxChunkCells < 2) {
+  throw new Error(`Native LOD transition chunk capacity too small: ${maxChunkCells}`);
+}
+const chunkCellCount = 2;
+const cellPositions = [
+  [
+    -0.5, 0, 0, -0.5, 0, 1, -0.5, 1, 0, -0.5, 1, 1,
+    0, 0, 0, 1, 0, 0, 0, 1, 0, 1, 1, 0,
+    0, 0, 1, 1, 0, 1, 0, 1, 1, 1, 1, 1,
+  ],
+  [
+    0.5, 0, 0, 0.5, 0, 1, 0.5, 1, 0, 0.5, 1, 1,
+    1, 0, 0, 2, 0, 0, 1, 1, 0, 2, 1, 0,
+    1, 0, 1, 2, 0, 1, 1, 1, 1, 2, 1, 1,
+  ],
+];
+function unpackChunkTriangles(vertexCount, indexCount) {
+  const stride = e.get_vertex_stride();
+  const verticesView = new Uint8Array(e.memory.buffer, e.get_vertex_ptr(), vertexCount * stride);
+  const indicesView = new Uint32Array(e.memory.buffer, e.get_index_ptr(), indexCount);
+  const verts = [];
+  const data = new DataView(verticesView.buffer, verticesView.byteOffset, verticesView.byteLength);
+  for (let v = 0; v < vertexCount; v++) {
+    const base = v * stride;
+    verts.push({
+      x: data.getUint16(base + 0, true),
+      y: data.getUint16(base + 2, true),
+      z: data.getUint16(base + 4, true),
+    });
+  }
+  const tris = [];
+  for (let i = 0; i < indexCount; i += 3) {
+    tris.push([indicesView[i], indicesView[i + 1], indicesView[i + 2]]);
+  }
+  return { verts, tris };
+}
+function densityForPosition(px, py, pz) {
+  return px + py + pz - 1.05;
+}
+
+const chunkPositionsView = new Float32Array(
+  e.memory.buffer,
+  e.get_lod_transition_chunk_position_ptr(),
+  chunkCellCount * 12 * 3,
+);
+const chunkDensitiesView = new Float32Array(
+  e.memory.buffer,
+  e.get_lod_transition_chunk_density_ptr(),
+  chunkCellCount * 12,
+);
+const chunkSidesView = new Int32Array(
+  e.memory.buffer,
+  e.get_lod_transition_chunk_sides_ptr(),
+  chunkCellCount,
+);
+for (let cell = 0; cell < chunkCellCount; cell++) {
+  chunkPositionsView.set(cellPositions[cell], cell * 12 * 3);
+  for (let s = 0; s < 12; s++) {
+    const o = cell * 12 * 3 + s * 3;
+    chunkDensitiesView[cell * 12 + s] = densityForPosition(
+      chunkPositionsView[o + 0],
+      chunkPositionsView[o + 1],
+      chunkPositionsView[o + 2],
+    );
+  }
+  chunkSidesView[cell] = 0;
+}
+const chunkVertexCount = e.generate_lod_transition_chunk_mesh(chunkCellCount);
+const chunkIndexCount = e.get_index_count();
+if (chunkVertexCount <= 0 || chunkIndexCount <= 0 || chunkIndexCount % 3 !== 0) {
+  throw new Error(`Native LOD transition chunk mesh produced invalid output: ${chunkVertexCount}v/${chunkIndexCount}i`);
+}
+if (e.get_overflow() !== 0) {
+  throw new Error('Native LOD transition chunk mesh overflowed mesh buffers');
+}
+const { verts: chunkVerts, tris: chunkTris } = unpackChunkTriangles(chunkVertexCount, chunkIndexCount);
+for (const tri of chunkTris) {
+  for (const idx of tri) {
+    if (idx >= chunkVertexCount) {
+      throw new Error(`Native LOD transition chunk index ${idx} references vertex beyond ${chunkVertexCount}`);
+    }
+  }
+}
+
+let perCellTriangleTotal = 0;
+for (let cell = 0; cell < chunkCellCount; cell++) {
+  transitionPositions.set(cellPositions[cell]);
+  for (let s = 0; s < 12; s++) {
+    const o = s * 3;
+    transitionDensities[s] = densityForPosition(transitionPositions[o], transitionPositions[o + 1], transitionPositions[o + 2]);
+  }
+  const perCellVertexCount = e.generate_lod_transition_cell_mesh(0);
+  const perCellIndexCount = e.get_index_count();
+  if (perCellVertexCount <= 0 || perCellIndexCount <= 0) {
+    throw new Error(`Per-cell LOD transition cell ${cell} produced empty mesh in chunk-equivalence check`);
+  }
+  perCellTriangleTotal += perCellIndexCount / 3;
+}
+if (chunkTris.length !== perCellTriangleTotal) {
+  throw new Error(`Native LOD transition chunk mesh emitted ${chunkTris.length} triangles; per-cell loop emitted ${perCellTriangleTotal}`);
+}
+transitionMeshSummaries.push(`chunk:${chunkVertexCount}v/${chunkTris.length}t==cells:${perCellTriangleTotal}t`);
 
 e.clear_edits();
 e.generate_chunk(0, 0, 0, 0);

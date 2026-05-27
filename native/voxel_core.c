@@ -15,6 +15,7 @@
 #define DENSITY_SCALE 256.0f
 #define DENSITY_STRIDE 2
 #define LOD_TRANSITION_SAMPLE_COUNT 12
+#define LOD_TRANSITION_MAX_CHUNK_CELLS 2048
 #define LOD_TRANSITION_ALGORITHM_TRANSITION_PRISM_TETRA_TABLE 1
 #define LOD_TRANSITION_SIDE_NEG_X 0
 #define LOD_TRANSITION_SIDE_POS_X 1
@@ -85,6 +86,9 @@ static signed short g_density_scratch[GRID_N * GRID_N * GRID_N];
 static float g_density_gradient[GRID_N * GRID_N * GRID_N * 3];
 static float g_lod_transition_positions[LOD_TRANSITION_SAMPLE_COUNT * 3];
 static float g_lod_transition_densities[LOD_TRANSITION_SAMPLE_COUNT];
+static float g_lod_transition_chunk_positions[LOD_TRANSITION_MAX_CHUNK_CELLS * LOD_TRANSITION_SAMPLE_COUNT * 3];
+static float g_lod_transition_chunk_densities[LOD_TRANSITION_MAX_CHUNK_CELLS * LOD_TRANSITION_SAMPLE_COUNT];
+static int g_lod_transition_chunk_sides[LOD_TRANSITION_MAX_CHUNK_CELLS];
 static float g_worldgen_tile_fields[WORLDGEN_TILE_SAMPLE_COUNT * WORLDGEN_TILE_FIELD_COUNT];
 static unsigned char g_worldgen_tile_biome_ids[WORLDGEN_TILE_SAMPLE_COUNT];
 static unsigned char g_worldgen_tile_water_ids[WORLDGEN_TILE_SAMPLE_COUNT];
@@ -1708,16 +1712,60 @@ static void lod_transition_emit_tetra(
     }
 }
 
-int generate_lod_transition_cell_mesh(int side) {
-    reset_lod_transition_output();
-    if (
-        side != LOD_TRANSITION_SIDE_NEG_X &&
-        side != LOD_TRANSITION_SIDE_POS_X &&
-        side != LOD_TRANSITION_SIDE_NEG_Z &&
-        side != LOD_TRANSITION_SIDE_POS_Z
-    ) {
-        return 0;
+static int lod_transition_side_is_valid(int side) {
+    return side == LOD_TRANSITION_SIDE_NEG_X
+        || side == LOD_TRANSITION_SIDE_POS_X
+        || side == LOD_TRANSITION_SIDE_NEG_Z
+        || side == LOD_TRANSITION_SIDE_POS_Z;
+}
+
+static void lod_transition_compute_pack_frame_from_positions(const float *positions, int sample_count) {
+    if (sample_count <= 0) {
+        g_pack_origin_x = 0.0f;
+        g_pack_origin_y = 0.0f;
+        g_pack_origin_z = 0.0f;
+        g_pack_scale = 1.0f;
+        g_bounds_min_x = 0.0f;
+        g_bounds_min_y = 0.0f;
+        g_bounds_min_z = 0.0f;
+        g_bounds_max_x = 0.0f;
+        g_bounds_max_y = 0.0f;
+        g_bounds_max_z = 0.0f;
+        return;
     }
+    float min_x = positions[0];
+    float min_y = positions[1];
+    float min_z = positions[2];
+    float max_x = min_x;
+    float max_y = min_y;
+    float max_z = min_z;
+    for (int i = 1; i < sample_count; ++i) {
+        int o = i * 3;
+        float x = positions[o + 0];
+        float y = positions[o + 1];
+        float z = positions[o + 2];
+        min_x = minf2(min_x, x);
+        min_y = minf2(min_y, y);
+        min_z = minf2(min_z, z);
+        max_x = maxf2(max_x, x);
+        max_y = maxf2(max_y, y);
+        max_z = maxf2(max_z, z);
+    }
+    float extent = maxf2(max_x - min_x, maxf2(max_y - min_y, max_z - min_z));
+    g_pack_origin_x = min_x;
+    g_pack_origin_y = min_y;
+    g_pack_origin_z = min_z;
+    g_pack_scale = maxf2(extent, 1.0f);
+    g_bounds_min_x = min_x + g_pack_scale;
+    g_bounds_min_y = min_y + g_pack_scale;
+    g_bounds_min_z = min_z + g_pack_scale;
+    g_bounds_max_x = min_x;
+    g_bounds_max_y = min_y;
+    g_bounds_max_z = min_z;
+}
+
+static void emit_lod_transition_cell_into_current_mesh(int side) {
+    if (!lod_transition_side_is_valid(side)) return;
 
     float local_pos[LOD_TRANSITION_MAX_LOCAL_VERTS][3];
     float local_normal[LOD_TRANSITION_MAX_LOCAL_VERTS][3];
@@ -1747,37 +1795,7 @@ int generate_lod_transition_cell_mesh(int side) {
             lod_transition_emit_tetra(tetra, local_pos, local_normal, local_indices, &local_vertex_count, &local_index_count);
         }
     }
-    if (local_vertex_count <= 0 || local_index_count <= 0) return 0;
-
-    float min_x = g_lod_transition_positions[0];
-    float min_y = g_lod_transition_positions[1];
-    float min_z = g_lod_transition_positions[2];
-    float max_x = min_x;
-    float max_y = min_y;
-    float max_z = min_z;
-    for (int i = 1; i < LOD_TRANSITION_SAMPLE_COUNT; ++i) {
-        int o = i * 3;
-        float x = g_lod_transition_positions[o + 0];
-        float y = g_lod_transition_positions[o + 1];
-        float z = g_lod_transition_positions[o + 2];
-        min_x = minf2(min_x, x);
-        min_y = minf2(min_y, y);
-        min_z = minf2(min_z, z);
-        max_x = maxf2(max_x, x);
-        max_y = maxf2(max_y, y);
-        max_z = maxf2(max_z, z);
-    }
-    float extent = maxf2(max_x - min_x, maxf2(max_y - min_y, max_z - min_z));
-    g_pack_origin_x = min_x;
-    g_pack_origin_y = min_y;
-    g_pack_origin_z = min_z;
-    g_pack_scale = maxf2(extent, 1.0f);
-    g_bounds_min_x = min_x + g_pack_scale;
-    g_bounds_min_y = min_y + g_pack_scale;
-    g_bounds_min_z = min_z + g_pack_scale;
-    g_bounds_max_x = min_x;
-    g_bounds_max_y = min_y;
-    g_bounds_max_z = min_z;
+    if (local_vertex_count <= 0 || local_index_count <= 0) return;
 
     unsigned int final_indices[LOD_TRANSITION_MAX_LOCAL_VERTS];
     for (int i = 0; i < local_vertex_count; ++i) {
@@ -1795,6 +1813,34 @@ int generate_lod_transition_cell_mesh(int side) {
     }
     for (int i = 0; i < local_index_count; i += 3) {
         add_triangle_indices(final_indices[local_indices[i]], final_indices[local_indices[i + 1]], final_indices[local_indices[i + 2]]);
+    }
+}
+
+int generate_lod_transition_cell_mesh(int side) {
+    reset_lod_transition_output();
+    if (!lod_transition_side_is_valid(side)) return 0;
+    lod_transition_compute_pack_frame_from_positions(g_lod_transition_positions, LOD_TRANSITION_SAMPLE_COUNT);
+    emit_lod_transition_cell_into_current_mesh(side);
+    return (int)g_vertex_count;
+}
+
+int generate_lod_transition_chunk_mesh(int cell_count) {
+    reset_lod_transition_output();
+    if (cell_count <= 0 || cell_count > LOD_TRANSITION_MAX_CHUNK_CELLS) return 0;
+
+    int total_samples = cell_count * LOD_TRANSITION_SAMPLE_COUNT;
+    lod_transition_compute_pack_frame_from_positions(g_lod_transition_chunk_positions, total_samples);
+
+    for (int cell = 0; cell < cell_count; ++cell) {
+        int pos_offset = cell * LOD_TRANSITION_SAMPLE_COUNT * 3;
+        int den_offset = cell * LOD_TRANSITION_SAMPLE_COUNT;
+        for (int i = 0; i < LOD_TRANSITION_SAMPLE_COUNT * 3; ++i) {
+            g_lod_transition_positions[i] = g_lod_transition_chunk_positions[pos_offset + i];
+        }
+        for (int i = 0; i < LOD_TRANSITION_SAMPLE_COUNT; ++i) {
+            g_lod_transition_densities[i] = g_lod_transition_chunk_densities[den_offset + i];
+        }
+        emit_lod_transition_cell_into_current_mesh(g_lod_transition_chunk_sides[cell]);
     }
     return (int)g_vertex_count;
 }
@@ -2597,6 +2643,14 @@ unsigned int get_index_ptr(void) { return (unsigned int)&g_indices[0]; }
 unsigned int get_density_ptr(void) { return (unsigned int)&g_density[0]; }
 unsigned int get_lod_transition_position_ptr(void) { return (unsigned int)&g_lod_transition_positions[0]; }
 unsigned int get_lod_transition_density_ptr(void) { return (unsigned int)&g_lod_transition_densities[0]; }
+unsigned int get_lod_transition_chunk_position_ptr(void) { return (unsigned int)&g_lod_transition_chunk_positions[0]; }
+unsigned int get_lod_transition_chunk_density_ptr(void) { return (unsigned int)&g_lod_transition_chunk_densities[0]; }
+unsigned int get_lod_transition_chunk_sides_ptr(void) { return (unsigned int)&g_lod_transition_chunk_sides[0]; }
+int get_lod_transition_max_chunk_cells(void) { return LOD_TRANSITION_MAX_CHUNK_CELLS; }
+float get_pack_origin_x(void) { return g_pack_origin_x; }
+float get_pack_origin_y(void) { return g_pack_origin_y; }
+float get_pack_origin_z(void) { return g_pack_origin_z; }
+float get_pack_scale(void) { return g_pack_scale; }
 unsigned int get_vertex_count(void) { return g_vertex_count; }
 unsigned int get_index_count(void) { return g_index_count; }
 unsigned int get_density_count(void) { return GRID_N * GRID_N * GRID_N; }
