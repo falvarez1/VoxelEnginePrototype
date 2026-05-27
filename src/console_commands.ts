@@ -1,5 +1,6 @@
 import type { EngineConsole, ConsoleCommandContext } from './console.ts';
 import type { EngineSettings, RuntimeProfile } from './engine_contracts.ts';
+import type { BenchmarkResult, Tour, Waypoint, TourState } from './camera_tour.ts';
 
 export const KNOWN_SETTINGS_ACTIONS = [
   'carve',
@@ -188,6 +189,26 @@ export interface ConsoleDeps {
   benchmarkHistory?(): unknown[];
   screenshot?(filename?: string): Promise<void>;
   canvas?(): HTMLCanvasElement | null;
+  tour?: {
+    state(): TourState;
+    addWaypoint(opts?: { spacingMs?: number; timeMs?: number; fov?: boolean }): Waypoint;
+    listScratch(): Waypoint[];
+    removeWaypoint(index: number): Waypoint | null;
+    clearScratch(): number;
+    setWaypointTime(index: number, timeMs: number): boolean;
+    setEasing(easing: 'linear' | 'smooth'): void;
+    saveScratch(name: string): Tour;
+    loadIntoScratch(name: string): Tour;
+    deleteSaved(name: string): boolean;
+    listSaved(): string[];
+    getSaved(name: string): Tour | null;
+    start(target: Tour | string): Tour;
+    stop(): BenchmarkResult | null;
+    pause(): boolean;
+    resume(): boolean;
+    getLastResult(): BenchmarkResult | null;
+    download(filename?: string): boolean;
+  };
 }
 
 function describeNumber(value: number, decimals = 3): string {
@@ -1323,6 +1344,153 @@ export function registerEngineConsoleCommands(console: EngineConsole, deps: Cons
         return;
       }
       ctx.error(`crash kinds: throw, reject, unknown-action, setting`);
+    },
+  });
+
+  console.register({
+    name: 'waypoint',
+    description: 'Manage scratch tour waypoints. waypoint <add|list|remove|clear|time|easing|save|load|delete|tours>',
+    usage: '<sub> [...args]',
+    aliases: ['wp'],
+    handler: (args, ctx) => {
+      if (!deps.tour) { ctx.error('Tour system unavailable.'); return; }
+      const sub = (args[0] ?? 'list').toLowerCase();
+      if (sub === 'add') {
+        const spacing = parseNumber(args[1]);
+        const wp = deps.tour.addWaypoint(spacing !== null ? { spacingMs: spacing } : undefined);
+        ctx.log(`#${deps.tour.listScratch().length - 1} added @${wp.timeMs} ms: pos=[${wp.position.map(v => describeNumber(v, 1)).join(', ')}] yaw=${describeNumber(wp.yaw, 3)} pitch=${describeNumber(wp.pitch, 3)}`);
+        return;
+      }
+      if (sub === 'list') {
+        const list = deps.tour.listScratch();
+        if (list.length === 0) { ctx.log('Scratch tour is empty. Use "waypoint add" to capture the current pose.'); return; }
+        ctx.log(`Scratch tour: ${list.length} waypoint(s)`);
+        list.forEach((wp, i) => ctx.log(`  #${i} @${wp.timeMs.toFixed(0)}ms pos=[${wp.position.map(v => describeNumber(v, 1)).join(', ')}] yaw=${describeNumber(wp.yaw, 3)} pitch=${describeNumber(wp.pitch, 3)}${wp.fov !== undefined ? ` fov=${describeNumber(wp.fov, 1)}` : ''}`));
+        return;
+      }
+      if (sub === 'remove') {
+        if (!requireArgs(args, 2, ctx, 'waypoint remove <index>')) return;
+        const idx = parseNumber(args[1]);
+        if (idx === null) { ctx.error('waypoint remove expects an index'); return; }
+        const removed = deps.tour.removeWaypoint(Math.round(idx));
+        ctx.log(removed ? `removed waypoint #${idx}` : `no waypoint at index ${idx}`);
+        return;
+      }
+      if (sub === 'clear') {
+        const n = deps.tour.clearScratch();
+        ctx.log(`cleared ${n} waypoint(s)`);
+        return;
+      }
+      if (sub === 'time') {
+        if (!requireArgs(args, 3, ctx, 'waypoint time <index> <ms>')) return;
+        const idx = parseNumber(args[1]);
+        const ms = parseNumber(args[2]);
+        if (idx === null || ms === null) { ctx.error('waypoint time expects index and ms'); return; }
+        const ok = deps.tour.setWaypointTime(Math.round(idx), ms);
+        ctx.log(ok ? `#${Math.round(idx)} timeMs=${ms}` : `no waypoint at index ${idx}`);
+        return;
+      }
+      if (sub === 'easing') {
+        if (!requireArgs(args, 2, ctx, 'waypoint easing <linear|smooth>')) return;
+        const e = args[1].toLowerCase();
+        if (e !== 'linear' && e !== 'smooth') { ctx.error('easing must be "linear" or "smooth"'); return; }
+        deps.tour.setEasing(e);
+        ctx.log(`easing=${e}`);
+        return;
+      }
+      if (sub === 'save') {
+        if (!requireArgs(args, 2, ctx, 'waypoint save <name>')) return;
+        try {
+          const tour = deps.tour.saveScratch(args[1]);
+          ctx.log(`saved tour "${tour.name}" with ${tour.waypoints.length} waypoints`);
+        } catch (error) {
+          ctx.error(error instanceof Error ? error.message : String(error));
+        }
+        return;
+      }
+      if (sub === 'load') {
+        if (!requireArgs(args, 2, ctx, 'waypoint load <name>')) return;
+        try {
+          const tour = deps.tour.loadIntoScratch(args[1]);
+          ctx.log(`loaded "${args[1]}" into scratch: ${tour.waypoints.length} waypoints`);
+        } catch (error) {
+          ctx.error(error instanceof Error ? error.message : String(error));
+        }
+        return;
+      }
+      if (sub === 'delete') {
+        if (!requireArgs(args, 2, ctx, 'waypoint delete <name>')) return;
+        ctx.log(deps.tour.deleteSaved(args[1]) ? `deleted "${args[1]}"` : `no saved tour named "${args[1]}"`);
+        return;
+      }
+      if (sub === 'tours') {
+        const names = deps.tour.listSaved();
+        if (names.length === 0) { ctx.log('No saved tours.'); return; }
+        for (const name of names) {
+          const tour = deps.tour.getSaved(name);
+          ctx.log(`  ${name}: ${tour?.waypoints.length ?? 0} waypoints, ${tour?.easing ?? 'smooth'} easing`);
+        }
+        return;
+      }
+      ctx.error(`waypoint <add|list|remove|clear|time|easing|save|load|delete|tours>`);
+    },
+  });
+
+  console.register({
+    name: 'tour',
+    description: 'Run/stop/inspect a camera tour and capture a deterministic benchmark.',
+    usage: '<run|stop|pause|resume|status|summary|export> [name|@scratch]',
+    handler: (args, ctx) => {
+      if (!deps.tour) { ctx.error('Tour system unavailable.'); return; }
+      const sub = (args[0] ?? 'status').toLowerCase();
+      if (sub === 'run' || sub === 'start' || sub === 'play') {
+        const target = args[1] ?? '@scratch';
+        try {
+          const tour = deps.tour.start(target);
+          ctx.log(`Running "${tour.name}" (${tour.waypoints.length} waypoints, ~${(tour.waypoints[tour.waypoints.length - 1].timeMs / 1000).toFixed(1)}s)`);
+        } catch (error) {
+          ctx.error(error instanceof Error ? error.message : String(error));
+        }
+        return;
+      }
+      if (sub === 'stop') {
+        const result = deps.tour.stop();
+        if (!result) { ctx.log('No tour running.'); return; }
+        ctx.log(`Tour "${result.tour}" stopped: ${result.sampleCount} samples, avg ${describeNumber(result.summary.avgFrameMs, 2)} ms, p95 ${describeNumber(result.summary.p95FrameMs, 2)} ms`);
+        return;
+      }
+      if (sub === 'pause') {
+        ctx.log(deps.tour.pause() ? 'paused' : 'no tour to pause');
+        return;
+      }
+      if (sub === 'resume') {
+        ctx.log(deps.tour.resume() ? 'resumed' : 'no paused tour');
+        return;
+      }
+      if (sub === 'status') {
+        ctx.log(`tour state: ${deps.tour.state()}`);
+        return;
+      }
+      if (sub === 'summary') {
+        const result = deps.tour.getLastResult();
+        if (!result) { ctx.error('No tour benchmark captured yet. Run a tour first.'); return; }
+        ctx.log(`Tour "${result.tour}" — ${result.sampleCount} samples over ${describeNumber(result.durationMs / 1000, 2)} s`);
+        ctx.log(`  avgFrame=${describeNumber(result.summary.avgFrameMs, 2)}ms (avgFps=${describeNumber(result.summary.avgFps, 1)})`);
+        ctx.log(`  min/p50/p95/p99/max frame: ${describeNumber(result.summary.minFrameMs, 2)} / ${describeNumber(result.summary.p50FrameMs, 2)} / ${describeNumber(result.summary.p95FrameMs, 2)} / ${describeNumber(result.summary.p99FrameMs, 2)} / ${describeNumber(result.summary.maxFrameMs, 2)} ms`);
+        ctx.log(`  drawCalls avg=${describeNumber(result.summary.avgDrawCalls, 1)} | terrainTris avg=${describeNumber(result.summary.avgTerrainTriangles, 0)}`);
+        ctx.log(`  upload avg=${describeNumber(result.summary.avgUploadMB, 2)} MB (peak ${describeNumber(result.summary.peakUploadMB, 2)} MB) | gpuMB avg=${describeNumber(result.summary.avgEstimatedGpuMB, 1)} (peak ${describeNumber(result.summary.peakEstimatedGpuMB, 1)})`);
+        ctx.log(`  clusters avg=${describeNumber(result.summary.avgVisibleTerrainClusters, 1)} | veg avg=${describeNumber(result.summary.avgVegetationInstances, 0)} | worker pending avg=${describeNumber(result.summary.avgWorkerPending, 1)} | queued peak=${result.summary.peakWorkerQueued}`);
+        for (const seg of result.perSegment) {
+          ctx.log(`  seg ${seg.segmentIndex}: ${seg.samples} samples, avg ${describeNumber(seg.avgFrameMs, 2)} ms (p95 ${describeNumber(seg.p95FrameMs, 2)}, max ${describeNumber(seg.maxFrameMs, 2)})`);
+        }
+        return;
+      }
+      if (sub === 'export' || sub === 'download') {
+        const ok = deps.tour.download(args[1]);
+        ctx.log(ok ? 'tour benchmark downloaded' : 'no tour benchmark available; run a tour first');
+        return;
+      }
+      ctx.error('tour <run|stop|pause|resume|status|summary|export> [name]');
     },
   });
 

@@ -2,6 +2,7 @@ import { FlyCamera, add, scale, vec3, normalize } from './math.ts';
 import { Renderer } from './renderer.ts';
 import { EngineConsole } from './console.ts';
 import { registerEngineConsoleCommands } from './console_commands.ts';
+import { CameraTour, type BenchmarkResult, type Tour, type Waypoint } from './camera_tour.ts';
 import { createSettingsPanel, type BrushInspectorBar, type BrushInspectorPanelState, type BrushPresetPanelState, type EditHistoryPanelItem, type RegionDiffPanelItem, type RegionDiffPanelState, type SettingsPanel } from './settings_panel.ts';
 import { RuntimeProfiler } from './profiler.ts';
 import { CompressedChunkCache, type PersistedChunkMesh } from './chunk_cache.ts';
@@ -6983,6 +6984,18 @@ async function main() {
     setStreamRadius: (radius) => settingsPanel?.setValue('streamRadius', radius),
   });
 
+  const cameraTour = new CameraTour();
+  let lastTourResult: BenchmarkResult | null = null;
+  const tourSettingsSnapshot = (): Record<string, unknown> => ({ ...settings });
+  const tourCapabilitiesSnapshot = (): Record<string, unknown> => ({ ...renderer.capabilities });
+  const finalizeTour = (): BenchmarkResult | null => {
+    if (cameraTour.getState() !== 'done' && !cameraTour.isActive()) return lastTourResult;
+    const result = cameraTour.stop(camera, tourSettingsSnapshot(), tourCapabilitiesSnapshot());
+    if (result) lastTourResult = result;
+    return lastTourResult;
+  };
+  const startTour = (tourOrName: Tour | string): Tour => cameraTour.start(tourOrName, camera);
+
   const engineConsole = new EngineConsole(document.body);
   registerEngineConsoleCommands(engineConsole, {
     getSettings: () => settings,
@@ -7095,8 +7108,36 @@ async function main() {
     autoQualityState: () => serializeAutoQualityState(autoQualityState) as unknown as Record<string, unknown>,
     benchmarkHistory: () => browserWorkerBenchmarkCaptures as unknown as unknown[],
     canvas: () => canvas,
+    tour: {
+      state: () => cameraTour.getState(),
+      addWaypoint: (opts) => cameraTour.addWaypoint(camera, opts),
+      listScratch: () => cameraTour.getScratch().waypoints,
+      removeWaypoint: (index) => cameraTour.removeWaypoint(index),
+      clearScratch: () => cameraTour.clearScratch(),
+      setWaypointTime: (index, ms) => cameraTour.setWaypointTime(index, ms),
+      setEasing: (easing) => cameraTour.setEasing(easing),
+      saveScratch: (name) => cameraTour.saveScratch(name),
+      loadIntoScratch: (name) => cameraTour.loadIntoScratch(name),
+      deleteSaved: (name) => cameraTour.deleteSaved(name),
+      listSaved: () => cameraTour.listSaved(),
+      getSaved: (name) => cameraTour.getSaved(name),
+      start: (target) => startTour(target),
+      stop: () => finalizeTour(),
+      pause: () => cameraTour.pause(),
+      resume: () => cameraTour.resume(),
+      getLastResult: () => lastTourResult,
+      download: (filename) => {
+        const result = lastTourResult ?? cameraTour.getLastResult();
+        if (!result) return false;
+        const name = filename ?? `storm-canyon-tour-${result.tour}-${new Date(result.startedAt).toISOString().replace(/[:.]/g, '-')}.json`;
+        const blob = new Blob([JSON.stringify(result, null, 2)], { type: 'application/json' });
+        downloadBlob(blob, name);
+        return true;
+      },
+    },
   });
   (window as unknown as { __stormCanyonConsole?: EngineConsole }).__stormCanyonConsole = engineConsole;
+  (window as unknown as { __stormCanyonTour?: CameraTour }).__stormCanyonTour = cameraTour;
 
   const frameProbeEnabled = readBooleanUrlOverride('test.frameProbe', 'frameProbe') === true;
   const frameProbe: FrameProbeState | null = frameProbeEnabled
@@ -7130,7 +7171,8 @@ async function main() {
     const dt = Math.min(0.05, (now - last) / 1000);
     last = now;
     fps = fps * 0.92 + (1 / Math.max(dt, 0.0001)) * 0.08;
-    updateCamera(dt);
+    const tourActive = cameraTour.isActive();
+    if (!tourActive) updateCamera(dt);
     if (Math.hypot(
       camera.position[0] - lastDiagnosticCameraPosition.x,
       camera.position[1] - lastDiagnosticCameraPosition.y,
@@ -7172,6 +7214,27 @@ async function main() {
     renderer.render(camera, viewProj, now / 1000);
     markFrameProbe('render');
     const profile = profiler.sample(dt, renderer, streamer);
+    if (tourActive) {
+      const counts = streamer.counts();
+      const active = cameraTour.tick(camera, {
+        frameMs: profile.frameMs,
+        drawCalls: renderer.stats.drawCalls,
+        terrainTriangles: renderer.stats.terrainTriangles,
+        farTerrainTriangles: renderer.stats.farTerrainTriangles,
+        uploadMB: streamer.lastStats.uploadMB,
+        estimatedGpuMB: profile.estimatedGpuMB,
+        visibleTerrainChunks: renderer.stats.visibleTerrainChunks,
+        visibleTerrainClusters: renderer.stats.terrainClusters,
+        vegetationInstances: renderer.stats.vegetationInstances,
+        workerQueued: counts.queued,
+        workerPending: counts.pending,
+      });
+      if (!active && cameraTour.getState() === 'done') {
+        const finished = cameraTour.stop(camera, tourSettingsSnapshot(), tourCapabilitiesSnapshot());
+        if (finished) lastTourResult = finished;
+        engineConsole.log(`Tour "${finished?.tour}" complete: ${finished?.sampleCount ?? 0} samples, avg ${finished?.summary.avgFrameMs.toFixed(2) ?? '?'} ms, p95 ${finished?.summary.p95FrameMs.toFixed(2) ?? '?'} ms`);
+      }
+    }
     updateAutoQuality(profile, now);
     markFrameProbe('quality');
     if (!diagnosticCameraMoving && now - lastDiagnosticUiUpdate >= DIAGNOSTIC_UI_UPDATE_INTERVAL_MS) {
