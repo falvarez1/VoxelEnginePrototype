@@ -1,5 +1,7 @@
 import { FlyCamera, add, scale, vec3, normalize } from './math.ts';
 import { Renderer } from './renderer.ts';
+import { EngineConsole } from './console.ts';
+import { registerEngineConsoleCommands } from './console_commands.ts';
 import { createSettingsPanel, type BrushInspectorBar, type BrushInspectorPanelState, type BrushPresetPanelState, type EditHistoryPanelItem, type RegionDiffPanelItem, type RegionDiffPanelState, type SettingsPanel } from './settings_panel.ts';
 import { RuntimeProfiler } from './profiler.ts';
 import { CompressedChunkCache, type PersistedChunkMesh } from './chunk_cache.ts';
@@ -6885,83 +6887,87 @@ async function main() {
     else if (action === 'applyRetention') void applyRegionRetention().catch(error => streamer.showError(error instanceof Error ? error.message : String(error)));
   };
 
+  const dispatchSettingsAction = (action: string): boolean => {
+    if (action === 'carve') carveAtCrosshair();
+    else if (action === 'undoEdit') streamer.undoEdit();
+    else if (action === 'redoEdit') streamer.redoEdit();
+    else if (action === 'switchEditBranch') streamer.switchEditBranch();
+    else if (action === 'clearEdits') streamer.clearEdits();
+    else if (action === 'clearEditBranches') streamer.clearEditBranches();
+    else if (action === 'reloadChunks') streamer.reloadChunks();
+    else if (action === 'pickPaintMaterial') pickPaintMaterialAtCrosshair();
+    else if (action === 'paintMaterialGrass') applyPaintMaterialSwatch(PAINT_MATERIAL_GRASS);
+    else if (action === 'paintMaterialRock') applyPaintMaterialSwatch(PAINT_MATERIAL_ROCK);
+    else if (action === 'paintMaterialSnow') applyPaintMaterialSwatch(PAINT_MATERIAL_SNOW);
+    else if (action === 'paintMaterialMud') applyPaintMaterialSwatch(PAINT_MATERIAL_MUD);
+    else if (action === 'brushPresetDetail') applyDetailBrushPreset();
+    else if (action === 'brushPresetPath') applyPathBrushPreset();
+    else if (action === 'brushPresetTerrace') applyTerraceBrushPreset();
+    else if (action === 'brushPresetTunnel') applyTunnelBrushPreset();
+    else if (action === 'saveBrushPreset') saveCurrentBrushPreset();
+    else if (action === 'clearBrushPresets') clearBrushPresets();
+    else if (action === 'falloffPresetHard') applyHardEdgePreset();
+    else if (action === 'falloffPresetSoft') applySoftEdgePreset();
+    else if (action === 'saveRegion') void saveRegion().catch(error => streamer.showError(error instanceof Error ? error.message : String(error)));
+    else if (action === 'loadRegion') void loadRegion().catch(error => streamer.showError(error instanceof Error ? error.message : String(error)));
+    else if (action === 'diffRegion') void diffSavedRegion().catch(error => streamer.showError(error instanceof Error ? error.message : String(error)));
+    else if (action === 'renameRegion') void renameRegion().catch(error => streamer.showError(error instanceof Error ? error.message : String(error)));
+    else if (action === 'duplicateRegion') void duplicateRegion().catch(error => streamer.showError(error instanceof Error ? error.message : String(error)));
+    else if (action === 'pruneOldestRegion') void pruneOldestRegion().catch(error => streamer.showError(error instanceof Error ? error.message : String(error)));
+    else if (action === 'dryRunRegionRetention') void dryRunRegionRetention().catch(error => streamer.showError(error instanceof Error ? error.message : String(error)));
+    else if (action === 'applyRegionRetention') void applyRegionRetention().catch(error => streamer.showError(error instanceof Error ? error.message : String(error)));
+    else if (action === 'exportRegionMaintenanceReport') void exportRegionMaintenanceReport().catch(error => streamer.showError(error instanceof Error ? error.message : String(error)));
+    else if (action === 'exportRegionBundle') void exportRegionBundle().catch(error => streamer.showError(error instanceof Error ? error.message : String(error)));
+    else if (action === 'importRegionBundle') importRegionBundle();
+    else if (action === 'previewRegionImport') previewRegionImport();
+    else if (action === 'applyRegionImportPreview') void applyRegionImportPreview().catch(error => streamer.showError(error instanceof Error ? error.message : String(error)));
+    else if (action === 'mergeRegionImportPreview') void mergeRegionImportPreview().catch(error => streamer.showError(error instanceof Error ? error.message : String(error)));
+    else if (action === 'resetGameProgress') {
+      game.resetProgress();
+      refreshGameMarkers();
+    }
+    else if (action === 'exportRegion') exportRegion();
+    else if (action === 'importRegion') importRegion();
+    else if (action === 'clearSavedRegion') void clearSavedRegion().catch(error => streamer.showError(error instanceof Error ? error.message : String(error)));
+    else if (action === 'captureDensitySlice') captureDensitySlice();
+    else if (action === 'previousDensityCapture') {
+      densityCaptureLibrary = selectDensityCapture(densityCaptureLibrary, -1);
+      densitySliceDiff = null;
+    } else if (action === 'nextDensityCapture') {
+      densityCaptureLibrary = selectDensityCapture(densityCaptureLibrary, 1);
+      densitySliceDiff = null;
+    } else if (action === 'previousDensitySet') {
+      densityCaptureLibrary = selectDensityCaptureSet(densityCaptureLibrary, -1);
+      densitySliceDiff = null;
+    } else if (action === 'nextDensitySet') {
+      densityCaptureLibrary = selectDensityCaptureSet(densityCaptureLibrary, 1);
+      densitySliceDiff = null;
+    } else if (action === 'newDensitySet') newDensitySet();
+    else if (action === 'renameDensitySet') renameDensitySet();
+    else if (action === 'importDensityCaptures') importDensityCaptures();
+    else if (action === 'diffDensitySlice') diffDensitySlice();
+    else if (action === 'runWorkerBenchmark') void captureBrowserWorkerBenchmark().catch(error => streamer.showError(error instanceof Error ? error.message : String(error)));
+    else if (action === 'exportWorkerBenchmarks') exportBrowserWorkerBenchmarkHistory();
+    else if (action === 'importWorkerBenchmarks') importBrowserWorkerBenchmarkHistory();
+    else if (action === 'clearWorkerBenchmarks') clearBrowserWorkerBenchmarkHistory();
+    else if (action === 'exportDiagnosticCapture') void exportDiagnosticCapture().catch(error => streamer.showError(error instanceof Error ? error.message : String(error)));
+    else if (action === 'exportQualityCapture') exportQualityCapture();
+    else if (action === 'exportWorldgenTiles') exportWorldgenTiles();
+    else if (action === 'exportDensityCaptures') exportDensityCaptures();
+    else if (action === 'clearDensityCaptures') {
+      densityCaptureLibrary = clearDensityCaptures();
+      densitySliceDiff = null;
+    }
+    else if (action === 'resetSettings') setSettings({ ...DEFAULT_ENGINE_SETTINGS, streamRadius: FALLBACK_STREAM_RADIUS }, 'all');
+    else return false;
+    return true;
+  };
+
   settingsPanel = createSettingsPanel({
     root: settingsRoot,
     initialSettings: settings,
     onChange: (nextSettings, changedKey) => setSettings(nextSettings, changedKey),
-    onAction: (action) => {
-      if (action === 'carve') carveAtCrosshair();
-      else if (action === 'undoEdit') streamer.undoEdit();
-      else if (action === 'redoEdit') streamer.redoEdit();
-      else if (action === 'switchEditBranch') streamer.switchEditBranch();
-      else if (action === 'clearEdits') streamer.clearEdits();
-      else if (action === 'clearEditBranches') streamer.clearEditBranches();
-      else if (action === 'reloadChunks') streamer.reloadChunks();
-      else if (action === 'pickPaintMaterial') pickPaintMaterialAtCrosshair();
-      else if (action === 'paintMaterialGrass') applyPaintMaterialSwatch(PAINT_MATERIAL_GRASS);
-      else if (action === 'paintMaterialRock') applyPaintMaterialSwatch(PAINT_MATERIAL_ROCK);
-      else if (action === 'paintMaterialSnow') applyPaintMaterialSwatch(PAINT_MATERIAL_SNOW);
-      else if (action === 'paintMaterialMud') applyPaintMaterialSwatch(PAINT_MATERIAL_MUD);
-      else if (action === 'brushPresetDetail') applyDetailBrushPreset();
-      else if (action === 'brushPresetPath') applyPathBrushPreset();
-      else if (action === 'brushPresetTerrace') applyTerraceBrushPreset();
-      else if (action === 'brushPresetTunnel') applyTunnelBrushPreset();
-      else if (action === 'saveBrushPreset') saveCurrentBrushPreset();
-      else if (action === 'clearBrushPresets') clearBrushPresets();
-      else if (action === 'falloffPresetHard') applyHardEdgePreset();
-      else if (action === 'falloffPresetSoft') applySoftEdgePreset();
-      else if (action === 'saveRegion') void saveRegion().catch(error => streamer.showError(error instanceof Error ? error.message : String(error)));
-      else if (action === 'loadRegion') void loadRegion().catch(error => streamer.showError(error instanceof Error ? error.message : String(error)));
-      else if (action === 'diffRegion') void diffSavedRegion().catch(error => streamer.showError(error instanceof Error ? error.message : String(error)));
-      else if (action === 'renameRegion') void renameRegion().catch(error => streamer.showError(error instanceof Error ? error.message : String(error)));
-      else if (action === 'duplicateRegion') void duplicateRegion().catch(error => streamer.showError(error instanceof Error ? error.message : String(error)));
-      else if (action === 'pruneOldestRegion') void pruneOldestRegion().catch(error => streamer.showError(error instanceof Error ? error.message : String(error)));
-      else if (action === 'dryRunRegionRetention') void dryRunRegionRetention().catch(error => streamer.showError(error instanceof Error ? error.message : String(error)));
-      else if (action === 'applyRegionRetention') void applyRegionRetention().catch(error => streamer.showError(error instanceof Error ? error.message : String(error)));
-      else if (action === 'exportRegionMaintenanceReport') void exportRegionMaintenanceReport().catch(error => streamer.showError(error instanceof Error ? error.message : String(error)));
-      else if (action === 'exportRegionBundle') void exportRegionBundle().catch(error => streamer.showError(error instanceof Error ? error.message : String(error)));
-      else if (action === 'importRegionBundle') importRegionBundle();
-      else if (action === 'previewRegionImport') previewRegionImport();
-      else if (action === 'applyRegionImportPreview') void applyRegionImportPreview().catch(error => streamer.showError(error instanceof Error ? error.message : String(error)));
-      else if (action === 'mergeRegionImportPreview') void mergeRegionImportPreview().catch(error => streamer.showError(error instanceof Error ? error.message : String(error)));
-      else if (action === 'resetGameProgress') {
-        game.resetProgress();
-        refreshGameMarkers();
-      }
-      else if (action === 'exportRegion') exportRegion();
-      else if (action === 'importRegion') importRegion();
-      else if (action === 'clearSavedRegion') void clearSavedRegion().catch(error => streamer.showError(error instanceof Error ? error.message : String(error)));
-      else if (action === 'captureDensitySlice') captureDensitySlice();
-      else if (action === 'previousDensityCapture') {
-        densityCaptureLibrary = selectDensityCapture(densityCaptureLibrary, -1);
-        densitySliceDiff = null;
-      } else if (action === 'nextDensityCapture') {
-        densityCaptureLibrary = selectDensityCapture(densityCaptureLibrary, 1);
-        densitySliceDiff = null;
-      } else if (action === 'previousDensitySet') {
-        densityCaptureLibrary = selectDensityCaptureSet(densityCaptureLibrary, -1);
-        densitySliceDiff = null;
-      } else if (action === 'nextDensitySet') {
-        densityCaptureLibrary = selectDensityCaptureSet(densityCaptureLibrary, 1);
-        densitySliceDiff = null;
-      } else if (action === 'newDensitySet') newDensitySet();
-      else if (action === 'renameDensitySet') renameDensitySet();
-      else if (action === 'importDensityCaptures') importDensityCaptures();
-      else if (action === 'diffDensitySlice') diffDensitySlice();
-      else if (action === 'runWorkerBenchmark') void captureBrowserWorkerBenchmark().catch(error => streamer.showError(error instanceof Error ? error.message : String(error)));
-      else if (action === 'exportWorkerBenchmarks') exportBrowserWorkerBenchmarkHistory();
-      else if (action === 'importWorkerBenchmarks') importBrowserWorkerBenchmarkHistory();
-      else if (action === 'clearWorkerBenchmarks') clearBrowserWorkerBenchmarkHistory();
-      else if (action === 'exportDiagnosticCapture') void exportDiagnosticCapture().catch(error => streamer.showError(error instanceof Error ? error.message : String(error)));
-      else if (action === 'exportQualityCapture') exportQualityCapture();
-      else if (action === 'exportWorldgenTiles') exportWorldgenTiles();
-      else if (action === 'exportDensityCaptures') exportDensityCaptures();
-      else if (action === 'clearDensityCaptures') {
-        densityCaptureLibrary = clearDensityCaptures();
-        densitySliceDiff = null;
-      }
-      else if (action === 'resetSettings') setSettings({ ...DEFAULT_ENGINE_SETTINGS, streamRadius: FALLBACK_STREAM_RADIUS }, 'all');
-    },
+    onAction: dispatchSettingsAction,
     onBrushPresetAction: (action, id) => {
       if (action === 'apply') applyBrushPreset(id);
       else if (action === 'delete') deleteBrushPreset(id);
@@ -6976,6 +6982,48 @@ async function main() {
     getBrushOptions: currentBrushOptions,
     setStreamRadius: (radius) => settingsPanel?.setValue('streamRadius', radius),
   });
+
+  const engineConsole = new EngineConsole(document.body);
+  registerEngineConsoleCommands(engineConsole, {
+    getSettings: () => settings,
+    setSettings: (next, key) => setSettings(next, key),
+    defaultSettings: DEFAULT_ENGINE_SETTINGS,
+    parseSettingValue: parseSettingValueForUrl,
+    dispatchAction: dispatchSettingsAction,
+    camera,
+    streamer: {
+      counts: () => streamer.counts(),
+      get baseStreamRadius() { return streamer.baseStreamRadius; },
+      get effectiveStreamRadius() { return streamer.effectiveStreamRadius; },
+      get terrainLodEnabled() { return streamer.terrainLodEnabled; },
+      applyBrush: (target, brush) => streamer.applyBrush(vec3(target[0], target[1], target[2]), brush as Parameters<typeof streamer.applyBrush>[1]),
+      reloadChunks: () => streamer.reloadChunks(),
+      clearEdits: () => streamer.clearEdits(),
+      undoEdit: () => streamer.undoEdit(),
+      redoEdit: () => streamer.redoEdit(),
+      showError: (message) => streamer.showError(message),
+      get lastStats() { return streamer.lastStats as unknown as Record<string, unknown>; },
+    },
+    renderer: {
+      get capabilities() { return renderer.capabilities as unknown as Record<string, unknown>; },
+      get stats() { return renderer.stats as unknown as Record<string, unknown>; },
+    },
+    profiler: {
+      get last() { return profiler.last; },
+      get frameMsSamples() { return profiler.frameMsSamples; },
+    },
+    game: {
+      progress: () => game.progress() as unknown as Record<string, unknown>,
+      resetProgress: () => { game.resetProgress(); refreshGameMarkers(); },
+    },
+    worldgenProbe: (x, z) => {
+      const probeCamera = { ...camera, position: vec3(x, camera.position[1], z) };
+      const snapshot = worldgenSnapshot(probeCamera as unknown as FlyCamera, settings);
+      return snapshot.camera as unknown as Record<string, number | string>;
+    },
+    reload: () => window.location.reload(),
+  });
+  (window as unknown as { __stormCanyonConsole?: EngineConsole }).__stormCanyonConsole = engineConsole;
 
   const frameProbeEnabled = readBooleanUrlOverride('test.frameProbe', 'frameProbe') === true;
   const frameProbe: FrameProbeState | null = frameProbeEnabled
