@@ -1,5 +1,5 @@
 {
-  "version": 7,
+  "version": 8,
   "generatedBy": "scripts/lod-selection-regression.mjs",
   "verticalChunks": [
     -1,
@@ -139,6 +139,15 @@
         "overflow": 0,
         "recordHash": "sha256:4f53cda18c2baa0c",
         "records": []
+      },
+      "nativeChunkTransitionMeshSummary": {
+        "algorithmId": 1,
+        "cellCount": 0,
+        "vertexCount": 0,
+        "triangleCount": 0,
+        "overflow": 0,
+        "triangleDelta": 0,
+        "vertexDelta": 0
       },
       "transitionMeshCells": [],
       "transitionMeshVertices": []
@@ -2930,6 +2939,15 @@
             "indexHash": "sha256:665e4ac690e1a761"
           }
         ]
+      },
+      "nativeChunkTransitionMeshSummary": {
+        "algorithmId": 1,
+        "cellCount": 49,
+        "vertexCount": 643,
+        "triangleCount": 648,
+        "overflow": 0,
+        "triangleDelta": 0,
+        "vertexDelta": 0
       },
       "transitionMeshCells": [
         {
@@ -6072,6 +6090,15 @@
           }
         ]
       },
+      "nativeChunkTransitionMeshSummary": {
+        "algorithmId": 1,
+        "cellCount": 172,
+        "vertexCount": 2269,
+        "triangleCount": 2282,
+        "overflow": 0,
+        "triangleDelta": 2,
+        "vertexDelta": 0
+      },
       "transitionMeshCells": [
         {
           "cellKey": "2,0,10,1:negX:1,1,10",
@@ -9212,6 +9239,15 @@
             "indexHash": "sha256:665e4ac690e1a761"
           }
         ]
+      },
+      "nativeChunkTransitionMeshSummary": {
+        "algorithmId": 1,
+        "cellCount": 329,
+        "vertexCount": 4321,
+        "triangleCount": 4354,
+        "overflow": 0,
+        "triangleDelta": 13,
+        "vertexDelta": 0
       },
       "transitionMeshCells": [
         {

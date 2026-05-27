@@ -274,6 +274,58 @@ function summarizeNativeTransitionMesh(mod, e, cases) {
   };
 }
 
+function summarizeNativeChunkTransitionMesh(mod, e, cases) {
+  const sampleCount = e.get_lod_transition_sample_count();
+  if (sampleCount !== 12) throw new Error(`Expected native transition sample count 12, got ${sampleCount}`);
+  const eligible = cases.filter(item => item.missingSamples === 0 && item.crossesSurface);
+  const cellSamples = [];
+  const cellSides = [];
+  for (const transitionCase of eligible) {
+    const samples = nativeTransitionCaseSamples(mod, transitionCase);
+    if (!samples) continue;
+    cellSamples.push(samples);
+    cellSides.push(transitionSideId(transitionCase.side));
+  }
+  if (cellSamples.length === 0) {
+    return {
+      algorithmId: e.get_lod_transition_algorithm_id(),
+      cellCount: 0,
+      vertexCount: 0,
+      triangleCount: 0,
+      overflow: 0,
+    };
+  }
+  const maxChunkCells = e.get_lod_transition_max_chunk_cells();
+  if (cellSamples.length > maxChunkCells) {
+    throw new Error(`Chunk transition ABI capacity ${maxChunkCells} exceeded by ${cellSamples.length} cells`);
+  }
+  const chunkPositions = new Float32Array(e.memory.buffer, e.get_lod_transition_chunk_position_ptr(), cellSamples.length * sampleCount * 3);
+  const chunkDensities = new Float32Array(e.memory.buffer, e.get_lod_transition_chunk_density_ptr(), cellSamples.length * sampleCount);
+  const chunkSides = new Int32Array(e.memory.buffer, e.get_lod_transition_chunk_sides_ptr(), cellSamples.length);
+  for (let cell = 0; cell < cellSamples.length; cell++) {
+    const samples = cellSamples[cell];
+    const posBase = cell * sampleCount * 3;
+    const denBase = cell * sampleCount;
+    for (let sample = 0; sample < sampleCount; sample++) {
+      chunkPositions[posBase + sample * 3 + 0] = samples[sample][0];
+      chunkPositions[posBase + sample * 3 + 1] = samples[sample][1];
+      chunkPositions[posBase + sample * 3 + 2] = samples[sample][2];
+      chunkDensities[denBase + sample] = samples[sample][3];
+    }
+    chunkSides[cell] = cellSides[cell];
+  }
+  const vertexCount = e.generate_lod_transition_chunk_mesh(cellSamples.length);
+  const indexCount = e.get_index_count();
+  const overflow = e.get_overflow() ? 1 : 0;
+  return {
+    algorithmId: e.get_lod_transition_algorithm_id(),
+    cellCount: cellSamples.length,
+    vertexCount,
+    triangleCount: indexCount > 0 ? indexCount / 3 : 0,
+    overflow,
+  };
+}
+
 function summarizeTransitionCases(cases) {
   const completeCells = cases.filter(item => item.missingSamples === 0).length;
   const crossingCells = cases.filter(item => item.crossesSurface).length;
@@ -358,6 +410,15 @@ function captureScene(mod, e, scene) {
   const transitionMesh = mod.buildTerrainLodTransitionMesh(transitionCases);
   const transitionMeshSummary = summarizeTransitionMesh(transitionMesh);
   const nativeTransitionMeshSummary = summarizeNativeTransitionMesh(mod, e, transitionCases);
+  const nativeChunkTransitionMeshSummary = summarizeNativeChunkTransitionMesh(mod, e, transitionCases);
+  if (nativeChunkTransitionMeshSummary.triangleCount > nativeTransitionMeshSummary.triangleCount) {
+    throw new Error(`Chunk transition ABI emitted more triangles (${nativeChunkTransitionMeshSummary.triangleCount}) than per-cell loop (${nativeTransitionMeshSummary.triangleCount}) in scene ${scene.name}`);
+  }
+  if (nativeChunkTransitionMeshSummary.vertexCount > nativeTransitionMeshSummary.vertexCount) {
+    throw new Error(`Chunk transition ABI emitted more vertices (${nativeChunkTransitionMeshSummary.vertexCount}) than per-cell loop (${nativeTransitionMeshSummary.vertexCount}) in scene ${scene.name}`);
+  }
+  nativeChunkTransitionMeshSummary.triangleDelta = nativeTransitionMeshSummary.triangleCount - nativeChunkTransitionMeshSummary.triangleCount;
+  nativeChunkTransitionMeshSummary.vertexDelta = nativeTransitionMeshSummary.vertexCount - nativeChunkTransitionMeshSummary.vertexCount;
   const transitionMeshCells = transitionMesh.cells
     .filter(item => item.skippedReason === 'none')
     .slice(0, 12)
@@ -377,6 +438,7 @@ function captureScene(mod, e, scene) {
     transitionCaseSamples,
     transitionMeshSummary,
     nativeTransitionMeshSummary,
+    nativeChunkTransitionMeshSummary,
     transitionMeshCells,
     transitionMeshVertices,
   };
@@ -389,7 +451,7 @@ async function captureBaseline() {
   const e = instance.exports;
   const scenes = SCENES.map(scene => captureScene(mod, e, scene));
   return {
-    version: 7,
+    version: 8,
     generatedBy: 'scripts/lod-selection-regression.mjs',
     verticalChunks: VERTICAL_CHUNKS,
     minStreamRadius: MIN_STREAM_RADIUS,
@@ -427,10 +489,12 @@ function printSummary(baseline) {
     const c = scene.transitionCaseSummary;
     const m = scene.transitionMeshSummary;
     const n = scene.nativeTransitionMeshSummary;
+    const nc = scene.nativeChunkTransitionMeshSummary;
     const caseSummary = c ? `, cases ${c.crossingCells}/${c.totalCells} crossing, ${c.uniqueCombinedCases} unique` : '';
     const meshSummary = m ? `, transition mesh ${m.emittedCells} cells/${m.triangleCount} tris` : '';
     const nativeSummary = n ? `, native ${n.emittedCells} cells/${n.triangleCount} tris` : '';
-    console.log(`- ${scene.name}: ${s.targetChunks} chunks, LOD 0/1/2+ ${s.lod0Chunks}/${s.lod1Chunks}/${s.lod2PlusChunks}, transitions ${s.transitionFaces}/${s.transitionEdges} faces on ${s.skirtedChunks} chunks, ${s.transitionCells} cells (${s.transitionFaceBaseCells} face cells)${caseSummary}${meshSummary}${nativeSummary}, covered ${s.coveredBaseCells}`);
+    const chunkSummary = nc ? `, chunk ABI ${nc.cellCount} cells/${nc.triangleCount} tris (Δ${nc.triangleDelta ?? 0}t)` : '';
+    console.log(`- ${scene.name}: ${s.targetChunks} chunks, LOD 0/1/2+ ${s.lod0Chunks}/${s.lod1Chunks}/${s.lod2PlusChunks}, transitions ${s.transitionFaces}/${s.transitionEdges} faces on ${s.skirtedChunks} chunks, ${s.transitionCells} cells (${s.transitionFaceBaseCells} face cells)${caseSummary}${meshSummary}${nativeSummary}${chunkSummary}, covered ${s.coveredBaseCells}`);
   }
 }
 
