@@ -998,22 +998,6 @@ function vegetationPatchBounds(instances: Float32Array): SphereBounds {
   return { center, radius };
 }
 
-function vegetationInstancePassesLod(instances: Float32Array, offset: number, cameraPosition: Vec3): boolean {
-  const x = instances[offset + 0];
-  const z = instances[offset + 2];
-  const scale = Math.max(0.1, instances[offset + 3]);
-  const kind = instances[offset + 4];
-  const dx = x - cameraPosition[0];
-  const dz = z - cameraPosition[2];
-  const distanceSq = dx * dx + dz * dz;
-  if (kind < 0.5) return distanceSq <= VEGETATION_SHRUB_LOD_DISTANCE * VEGETATION_SHRUB_LOD_DISTANCE;
-  if (kind >= 1.5) return distanceSq <= VEGETATION_ROCK_LOD_DISTANCE * VEGETATION_ROCK_LOD_DISTANCE;
-  if (scale < VEGETATION_SMALL_PINE_SCALE) {
-    return distanceSq <= VEGETATION_SMALL_PINE_LOD_DISTANCE * VEGETATION_SMALL_PINE_LOD_DISTANCE;
-  }
-  return true;
-}
-
 function scenicFarTerrainHeight(x: number, z: number): number {
   const riverDistance = Math.abs(x - scenicRiverCenter(z));
   const lateral = x - scenicRiverCenter(z);
@@ -2064,6 +2048,11 @@ struct Scene {
 };
 @group(0) @binding(0) var<uniform> scene: Scene;
 
+const VEG_SHRUB_LOD_SQ: f32 = ${VEGETATION_SHRUB_LOD_DISTANCE * VEGETATION_SHRUB_LOD_DISTANCE};
+const VEG_ROCK_LOD_SQ: f32 = ${VEGETATION_ROCK_LOD_DISTANCE * VEGETATION_ROCK_LOD_DISTANCE};
+const VEG_SMALL_PINE_LOD_SQ: f32 = ${VEGETATION_SMALL_PINE_LOD_DISTANCE * VEGETATION_SMALL_PINE_LOD_DISTANCE};
+const VEG_SMALL_PINE_SCALE: f32 = ${VEGETATION_SMALL_PINE_SCALE};
+
 struct VertexIn {
   @location(0) local: vec3<f32>,
   @location(1) normal: vec3<f32>,
@@ -2086,6 +2075,17 @@ struct VertexOut {
 };
 @vertex
 fn vs_main(input: VertexIn) -> VertexOut {
+  let dx = input.base.x - scene.camera.x;
+  let dz = input.base.z - scene.camera.z;
+  let distSq = dx * dx + dz * dz;
+  var lodPasses = true;
+  if (input.kind < 0.5) {
+    lodPasses = distSq <= VEG_SHRUB_LOD_SQ;
+  } else if (input.kind >= 1.5) {
+    lodPasses = distSq <= VEG_ROCK_LOD_SQ;
+  } else if (input.scale < VEG_SMALL_PINE_SCALE) {
+    lodPasses = distSq <= VEG_SMALL_PINE_LOD_SQ;
+  }
   var visible = 0.0;
   if (input.kind >= 1.5 && input.part >= 2.5) {
     visible = 1.0;
@@ -2094,6 +2094,7 @@ fn vs_main(input: VertexIn) -> VertexOut {
   } else if (input.kind >= 0.5 && input.kind < 1.5 && input.part < 1.5) {
     visible = 1.0;
   }
+  if (!lodPasses) { visible = 0.0; }
   let windable = select(0.0, 1.0, input.kind < 1.5 && input.part > 0.5);
   let stiffness = mix(1.0, 0.34, clamp(input.aspect, 0.0, 1.0));
   let wind = sin(scene.params.x * 1.8 + input.seed + input.base.x * 0.04) * 0.055 * input.local.y * input.scale * windable * stiffness;
@@ -2825,36 +2826,28 @@ export class Renderer {
   }
 
   private updateVegetationBatch(visiblePatches: VegetationPatch[], cameraPosition: Vec3): VegetationBatchResult {
-    let instanceCount = 0;
-    let lodCulledInstances = 0;
-    for (const patch of visiblePatches) {
-      for (let i = 0; i + 7 < patch.instances.length; i += VEGETATION_INSTANCE_FLOATS) {
-        if (vegetationInstancePassesLod(patch.instances, i, cameraPosition)) instanceCount++;
-        else lodCulledInstances++;
-      }
-    }
-
-    const floats = instanceCount * VEGETATION_INSTANCE_FLOATS;
+    void cameraPosition;
+    let totalInstances = 0;
+    for (const patch of visiblePatches) totalInstances += patch.instanceCount;
+    const floats = totalInstances * VEGETATION_INSTANCE_FLOATS;
     if (floats <= 0 || visiblePatches.length === 0) {
       this.vegetationBatchBytes = 0;
-      return { buffer: null, instanceCount: 0, lodCulledInstances };
+      return { buffer: null, instanceCount: 0, lodCulledInstances: 0 };
     }
     if (this.vegetationBatchScratch.length < floats) {
       this.vegetationBatchScratch = new Float32Array(floats);
     }
     let offset = 0;
     for (const patch of visiblePatches) {
-      for (let i = 0; i + 7 < patch.instances.length; i += VEGETATION_INSTANCE_FLOATS) {
-        if (!vegetationInstancePassesLod(patch.instances, i, cameraPosition)) continue;
-        this.vegetationBatchScratch.set(patch.instances.subarray(i, i + VEGETATION_INSTANCE_FLOATS), offset);
-        offset += VEGETATION_INSTANCE_FLOATS;
-      }
+      const usable = patch.instanceCount * VEGETATION_INSTANCE_FLOATS;
+      this.vegetationBatchScratch.set(patch.instances.subarray(0, usable), offset);
+      offset += usable;
     }
     const batch = this.vegetationBatchScratch.subarray(0, floats);
     const buffer = this.ensureVegetationBatchCapacity(batch.byteLength);
     this.device.queue.writeBuffer(buffer, 0, batch);
     this.vegetationBatchBytes = batch.byteLength;
-    return { buffer, instanceCount, lodCulledInstances };
+    return { buffer, instanceCount: totalInstances, lodCulledInstances: 0 };
   }
 
   setGameMarkers(instances: Float32Array): void {
