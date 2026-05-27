@@ -1121,6 +1121,146 @@ export function registerEngineConsoleCommands(console: EngineConsole, deps: Cons
   });
 
   console.register({
+    name: 'version',
+    description: 'Print engine + browser context.',
+    handler: (_args, ctx) => {
+      ctx.log(`User agent: ${navigator.userAgent}`);
+      ctx.log(`Cross-origin isolated: ${deps.renderer.capabilities.crossOriginIsolated} | SAB: ${deps.renderer.capabilities.sharedArrayBufferAvailable}`);
+      ctx.log(`WebGPU max buffer: ${deps.renderer.capabilities.maxBufferSizeMB} MB | timestamps: ${deps.renderer.capabilities.timestampQuery} | multi-draw: ${deps.renderer.capabilities.multiDrawIndirect}`);
+      ctx.log(`Worker buffer mode: ${deps.renderer.capabilities.workerBufferMode}`);
+    },
+  });
+
+  console.register({
+    name: 'wait',
+    description: 'Sleep for the given number of milliseconds (capped at 60000).',
+    usage: '<ms>',
+    handler: async (args, ctx) => {
+      if (!requireArgs(args, 1, ctx, 'wait <ms>')) return;
+      const ms = parseNumber(args[0]);
+      if (ms === null || ms < 0) { ctx.error('wait expects a non-negative number'); return; }
+      const capped = Math.min(60000, Math.round(ms));
+      await new Promise<void>(resolve => window.setTimeout(resolve, capped));
+    },
+  });
+
+  console.register({
+    name: 'assert',
+    description: 'Assert that a setting equals an expected value. Logs PASS/FAIL.',
+    usage: '<key> <expected>',
+    handler: (args, ctx) => {
+      if (!requireArgs(args, 2, ctx, 'assert <key> <expected>')) return;
+      const key = args[0] as keyof EngineSettings;
+      if (!(key in deps.defaultSettings)) { ctx.error(`Unknown setting: ${args[0]}`); return; }
+      const expected = deps.parseSettingValue(key, args.slice(1).join(' '));
+      const actual = (deps.getSettings() as unknown as Record<string, unknown>)[String(key)];
+      const pass = expected !== null && JSON.stringify(expected) === JSON.stringify(actual);
+      ctx.log(`${pass ? 'PASS' : 'FAIL'} ${args[0]} expected=${JSON.stringify(expected)} actual=${JSON.stringify(actual)}`);
+      if (!pass) throw new Error(`assert failed: ${args[0]}`);
+    },
+  });
+
+  console.register({
+    name: 'lod-plan',
+    description: 'Print LOD plan summary from streamer stats.',
+    handler: (_args, ctx) => {
+      const s = deps.streamer.lastStats;
+      const summary = {
+        targetChunks: s.lodPlanTargetChunks,
+        lod0: s.lodPlanLod0Chunks,
+        lod1: s.lodPlanLod1Chunks,
+        lod2Plus: s.lodPlanLod2PlusChunks,
+        transitionFaces: s.lodPlanTransitionFaces,
+        transitionEdges: s.lodPlanTransitionEdges,
+        transitionFaceBaseCells: s.lodPlanTransitionFaceBaseCells,
+        transitionCells: s.lodPlanTransitionCells,
+        coveredBaseCells: s.lodPlanCoveredBaseCells,
+        skirtedChunks: s.lodPlanSkirtedChunks,
+        maxLod: s.lodPlanMaxLod,
+        transitionMeshNative: s.lodTransitionMeshNative,
+        transitionMeshCells: s.lodTransitionMeshCells,
+        transitionMeshTriangles: s.lodTransitionMeshTriangles,
+        transitionMeshEmittedCells: s.lodTransitionMeshEmittedCells,
+        transitionMeshMissingCells: s.lodTransitionMeshMissingSampleCells,
+        transitionMeshDegenerateCells: s.lodTransitionMeshDegenerateCells,
+      };
+      ctx.log(formatJson(summary, 40));
+    },
+  });
+
+  console.register({
+    name: 'compression',
+    description: 'Print region compression telemetry.',
+    handler: (_args, ctx) => {
+      const s = deps.streamer.lastStats;
+      const c = {
+        rawMB: s.regionCompressionRawMB,
+        encodedMB: s.regionCompressionEncodedMB,
+        ratio: s.regionCompressionRatio,
+        savedChunks: s.savedRegionChunks,
+        loadedChunks: s.loadedRegionChunks,
+        exportedChunks: s.exportedRegionChunks,
+        importedChunks: s.importedRegionChunks,
+      };
+      ctx.log(formatJson(c, 20));
+    },
+  });
+
+  console.register({
+    name: 'sharing',
+    description: 'Print SharedArrayBuffer worker telemetry (queues, remesh, result slots).',
+    handler: (_args, ctx) => {
+      const s = deps.streamer.lastStats;
+      const block = {
+        queuePages: s.sharedQueuePages,
+        queueDispatches: s.sharedQueueDispatches,
+        queueBatches: s.sharedQueueBatches,
+        queueBatchMax: s.sharedQueueBatchMax,
+        remeshPages: s.sharedRemeshPages,
+        remeshDispatches: s.sharedRemeshDispatches,
+        remeshFallbackDispatches: s.remeshFallbackDispatches,
+        remeshFallbackBytes: s.remeshFallbackBytes,
+        resultPages: s.sharedResultPages,
+        resultChunks: s.sharedResultChunks,
+        resultSlotCapacity: s.sharedResultSlotCapacity,
+        resultSlotOccupied: s.sharedResultSlotOccupied,
+        resultSlotExhaustions: s.sharedResultSlotExhaustions,
+        resultSlotReleases: s.sharedResultSlotReleases,
+        cacheBorrowedChunks: s.sharedResultCacheBorrowedChunks,
+        cacheBorrowedBytes: s.sharedResultCacheBorrowedBytes,
+        cacheCopyBytes: s.sharedResultCacheCopyBytes,
+      };
+      ctx.log(formatJson(block, 30));
+    },
+  });
+
+  console.register({
+    name: 'crash',
+    description: 'Intentionally trigger an error path. crash <unknown-action|throw|reject|setting>',
+    usage: '<kind>',
+    handler: async (args, ctx) => {
+      const kind = args[0] ?? 'throw';
+      if (kind === 'throw') throw new Error('crash test: synchronous throw');
+      if (kind === 'reject') {
+        await Promise.reject(new Error('crash test: rejected promise'));
+        return;
+      }
+      if (kind === 'unknown-action') {
+        const ok = deps.dispatchAction('this-action-does-not-exist');
+        ctx.log(`dispatchAction returned: ${ok}`);
+        return;
+      }
+      if (kind === 'setting') {
+        const next: Partial<EngineSettings> = { ...deps.getSettings(), streamRadius: Number.NaN };
+        deps.setSettings(next, 'streamRadius');
+        ctx.log(`streamRadius after NaN write: ${deps.getSettings().streamRadius}`);
+        return;
+      }
+      ctx.error(`crash kinds: throw, reject, unknown-action, setting`);
+    },
+  });
+
+  console.register({
     name: 'close',
     description: 'Close the console.',
     aliases: ['quit', 'exit'],
