@@ -1,0 +1,269 @@
+{
+  "type": "storm-canyon-camera-tour-comparison",
+  "baseline": {
+    "file": "Y:\\tmp\\VoxelEnginePrototype\\docs\\tour-baselines\\baseline.json",
+    "tour": "baseline-canyon-flyover",
+    "startedAt": 1779911613588,
+    "sampleCount": 1107
+  },
+  "candidate": {
+    "file": "Y:\\tmp\\VoxelEnginePrototype\\docs\\tour-baselines\\candidate-slice6.json",
+    "tour": "baseline-canyon-flyover",
+    "startedAt": 1779913198276,
+    "sampleCount": 1155
+  },
+  "thresholds": {
+    "overall": 8,
+    "metric": 15,
+    "tail": 25
+  },
+  "overallAvgDeltaPct": -12.377690149661548,
+  "summary": [
+    {
+      "metric": "avgFrameMs",
+      "baseline": 13.557678410117433,
+      "candidate": 13.001406926406926,
+      "deltaPct": -4.102999546702544,
+      "formatted": "-4.10%"
+    },
+    {
+      "metric": "p50FrameMs",
+      "baseline": 16.609999999999673,
+      "candidate": 16.594999999997526,
+      "deltaPct": -0.09030704396235222,
+      "formatted": "-0.09%"
+    },
+    {
+      "metric": "p95FrameMs",
+      "baseline": 24.985000000000582,
+      "candidate": 16.7549999999992,
+      "deltaPct": -32.93976385831975,
+      "formatted": "-32.94%"
+    },
+    {
+      "metric": "p99FrameMs",
+      "baseline": 25.07000000000062,
+      "candidate": 25.034999999999854,
+      "deltaPct": -0.13960909453834508,
+      "formatted": "-0.14%"
+    },
+    {
+      "metric": "avgDrawCalls",
+      "baseline": 5,
+      "candidate": 5,
+      "deltaPct": 0,
+      "formatted": "0.00%"
+    },
+    {
+      "metric": "avgUploadMB",
+      "baseline": 0.04054129306755307,
+      "candidate": 0.039537335680676744,
+      "deltaPct": -2.476382253529647,
+      "formatted": "-2.48%"
+    },
+    {
+      "metric": "avgEstimatedGpuMB",
+      "baseline": 223.91328797861598,
+      "candidate": 223.91490866590888,
+      "deltaPct": 0.0007238013016243012,
+      "formatted": "+0.00%"
+    },
+    {
+      "metric": "avgWorkerPending",
+      "baseline": 19.2583559168925,
+      "candidate": 18.16103896103896,
+      "deltaPct": -5.6978745256806995,
+      "formatted": "-5.70%"
+    }
+  ],
+  "perSegment": [
+    {
+      "segmentIndex": 0,
+      "avgFrameMs": {
+        "metric": "avgFrameMs",
+        "baseline": 15.723270440251572,
+        "candidate": 14.920059880239519,
+        "deltaPct": -5.108419161676656,
+        "formatted": "-5.11%"
+      },
+      "p95FrameMs": {
+        "metric": "p95FrameMs",
+        "baseline": 25.07000000000062,
+        "candidate": 25,
+        "deltaPct": -0.27921818907306234,
+        "formatted": "-0.28%"
+      },
+      "maxFrameMs": {
+        "metric": "maxFrameMs",
+        "baseline": 33.35499999999956,
+        "candidate": 33.35500000000047,
+        "deltaPct": 2.7267117426860743e-12,
+        "formatted": "+0.00%"
+      },
+      "avgDrawCalls": {
+        "metric": "avgDrawCalls",
+        "baseline": 5,
+        "candidate": 5,
+        "deltaPct": 0,
+        "formatted": "0.00%"
+      }
+    },
+    {
+      "segmentIndex": 1,
+      "avgFrameMs": {
+        "metric": "avgFrameMs",
+        "baseline": 16.18016233766233,
+        "candidate": 15.77597484276729,
+        "deltaPct": -2.4980435082175867,
+        "formatted": "-2.50%"
+      },
+      "p95FrameMs": {
+        "metric": "p95FrameMs",
+        "baseline": 25.01000000000022,
+        "candidate": 25.024999999999636,
+        "deltaPct": 0.05997600959383363,
+        "formatted": "+0.06%"
+      },
+      "maxFrameMs": {
+        "metric": "maxFrameMs",
+        "baseline": 25.07000000000062,
+        "candidate": 33.35999999999876,
+        "deltaPct": 33.06741124849597,
+        "formatted": "+33.07%"
+      },
+      "avgDrawCalls": {
+        "metric": "avgDrawCalls",
+        "baseline": 5,
+        "candidate": 5,
+        "deltaPct": 0,
+        "formatted": "0.00%"
+      }
+    },
+    {
+      "segmentIndex": 2,
+      "avgFrameMs": {
+        "metric": "avgFrameMs",
+        "baseline": 13.10731770833334,
+        "candidate": 12.077053140096622,
+        "deltaPct": -7.86022427442725,
+        "formatted": "-7.86%"
+      },
+      "p95FrameMs": {
+        "metric": "p95FrameMs",
+        "baseline": 16.954999999999927,
+        "candidate": 16.710000000000946,
+        "deltaPct": -1.4450014744852988,
+        "formatted": "-1.45%"
+      },
+      "maxFrameMs": {
+        "metric": "maxFrameMs",
+        "baseline": 33.30000000000109,
+        "candidate": 25.025000000001455,
+        "deltaPct": -24.849849849847942,
+        "formatted": "-24.85%"
+      },
+      "avgDrawCalls": {
+        "metric": "avgDrawCalls",
+        "baseline": 5,
+        "candidate": 5,
+        "deltaPct": 0,
+        "formatted": "0.00%"
+      }
+    },
+    {
+      "segmentIndex": 3,
+      "avgFrameMs": {
+        "metric": "avgFrameMs",
+        "baseline": 12.355024875621885,
+        "candidate": 11.443847926267283,
+        "deltaPct": -7.374950342289275,
+        "formatted": "-7.37%"
+      },
+      "p95FrameMs": {
+        "metric": "p95FrameMs",
+        "baseline": 16.700000000000728,
+        "candidate": 16.704999999999927,
+        "deltaPct": 0.029940119755685193,
+        "formatted": "+0.03%"
+      },
+      "maxFrameMs": {
+        "metric": "maxFrameMs",
+        "baseline": 33.39500000000044,
+        "candidate": 25.05500000000029,
+        "deltaPct": -24.973798472825383,
+        "formatted": "-24.97%"
+      },
+      "avgDrawCalls": {
+        "metric": "avgDrawCalls",
+        "baseline": 5,
+        "candidate": 5,
+        "deltaPct": 0,
+        "formatted": "0.00%"
+      }
+    },
+    {
+      "segmentIndex": 4,
+      "avgFrameMs": {
+        "metric": "avgFrameMs",
+        "baseline": 12.417326732673263,
+        "candidate": 12.336593137254898,
+        "deltaPct": -0.6501688902647159,
+        "formatted": "-0.65%"
+      },
+      "p95FrameMs": {
+        "metric": "p95FrameMs",
+        "baseline": 16.710000000000946,
+        "candidate": 16.709999999999127,
+        "deltaPct": -1.0885633773463517e-11,
+        "formatted": "-0.00%"
+      },
+      "maxFrameMs": {
+        "metric": "maxFrameMs",
+        "baseline": 25.05999999999767,
+        "candidate": 25.014999999999418,
+        "deltaPct": -0.17956903431068616,
+        "formatted": "-0.18%"
+      },
+      "avgDrawCalls": {
+        "metric": "avgDrawCalls",
+        "baseline": 5,
+        "candidate": 5,
+        "deltaPct": 0,
+        "formatted": "0.00%"
+      }
+    },
+    {
+      "segmentIndex": 5,
+      "avgFrameMs": {
+        "metric": "avgFrameMs",
+        "baseline": 12.604723618090453,
+        "candidate": 12.52072139303483,
+        "deltaPct": -0.666434485997478,
+        "formatted": "-0.67%"
+      },
+      "p95FrameMs": {
+        "metric": "p95FrameMs",
+        "baseline": 16.830000000001746,
+        "candidate": 16.720000000001164,
+        "deltaPct": -0.6535947712452208,
+        "formatted": "-0.65%"
+      },
+      "maxFrameMs": {
+        "metric": "maxFrameMs",
+        "baseline": 25.090000000000146,
+        "candidate": 25.06000000000131,
+        "deltaPct": -0.11956954961672248,
+        "formatted": "-0.12%"
+      },
+      "avgDrawCalls": {
+        "metric": "avgDrawCalls",
+        "baseline": 5,
+        "candidate": 5,
+        "deltaPct": 0,
+        "formatted": "0.00%"
+      }
+    }
+  ],
+  "failures": [],
+  "pass": true
+}

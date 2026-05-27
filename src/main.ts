@@ -505,6 +505,9 @@ const VIEW_FOCUS_STREAM_TARGET_Y = 18;
 const VERTICAL_CHUNKS = [-1, 0, 1, 2];
 const MAX_QUEUE = 7200;
 const MAX_NEW_CHUNK_REQUESTS_PER_FRAME = 96;
+const MIN_NEW_CHUNK_REQUESTS_PER_FRAME = 24;
+const CHUNK_THROTTLE_QUEUE_FLOOR = 500;
+const CHUNK_THROTTLE_QUEUE_CEILING = 1500;
 const EVICT_HYSTERESIS_CHUNKS = 2.5;
 const MAX_EDIT_OPERATIONS = 512;
 const MAX_EDIT_BRANCHES = 12;
@@ -3431,6 +3434,17 @@ class ChunkStreamer {
 
     const required = this.requiredKeysForCamera(camera);
     const requiredKeys = this.requiredPlanKeys;
+    const queueDepth = this.queue.length;
+    let dispatchBudget = MAX_NEW_CHUNK_REQUESTS_PER_FRAME;
+    if (queueDepth >= CHUNK_THROTTLE_QUEUE_CEILING) {
+      dispatchBudget = MIN_NEW_CHUNK_REQUESTS_PER_FRAME;
+    } else if (queueDepth > CHUNK_THROTTLE_QUEUE_FLOOR) {
+      const t = (queueDepth - CHUNK_THROTTLE_QUEUE_FLOOR) / (CHUNK_THROTTLE_QUEUE_CEILING - CHUNK_THROTTLE_QUEUE_FLOOR);
+      dispatchBudget = Math.max(
+        MIN_NEW_CHUNK_REQUESTS_PER_FRAME,
+        Math.round(MAX_NEW_CHUNK_REQUESTS_PER_FRAME - (MAX_NEW_CHUNK_REQUESTS_PER_FRAME - MIN_NEW_CHUNK_REQUESTS_PER_FRAME) * t),
+      );
+    }
     let enqueuedThisFrame = 0;
     for (const item of required) {
       const state = this.states.get(item.key);
@@ -3446,7 +3460,7 @@ class ChunkStreamer {
           }
         }
       }
-      if (!state && this.queue.length < MAX_QUEUE && enqueuedThisFrame < MAX_NEW_CHUNK_REQUESTS_PER_FRAME) {
+      if (!state && this.queue.length < MAX_QUEUE && enqueuedThisFrame < dispatchBudget) {
         const canAdoptCachedChunk = adoptedThisFrame < maxAdoptions;
         const cachedCandidate = this.cache.peek(item.key);
         if (cachedCandidate) {
