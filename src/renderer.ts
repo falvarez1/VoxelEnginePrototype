@@ -36,6 +36,7 @@ const DEFAULT_RENDERER_SETTINGS: RendererSettings = {
   farTerrainEnabled: true,
   waterEnabled: true,
   vegetationEnabled: true,
+  lodSeamSkirtsEnabled: true,
   fogDensity: 0.42,
   materialDetail: 0.68,
   exposure: 1.54,
@@ -2847,7 +2848,9 @@ export class Renderer {
     this.removeChunk(key);
     if (!vertices || !indices || indices.length === 0) return;
     const lodSeamMask = Math.max(0, Math.trunc(stats.lodSeamMask ?? 0)) & LOD_SEAM_MASK_ALL;
-    const seammed = appendLodSeamSkirts(vertices, indices, frame, lodSeamMask);
+    const seammed = this.settings.lodSeamSkirtsEnabled
+      ? appendLodSeamSkirts(vertices, indices, frame, lodSeamMask)
+      : { vertices, indices, skirtTriangles: 0 };
     vertices = seammed.vertices;
     indices = seammed.indices;
     const nextStats: ChunkMeshStats = {

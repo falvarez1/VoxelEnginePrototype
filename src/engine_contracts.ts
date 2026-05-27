@@ -251,6 +251,7 @@ export interface EngineSettings {
   streamRadius: number;
   streamingEnabled: boolean;
   terrainLodEnabled: boolean;
+  lodSeamSkirtsEnabled: boolean;
   nearTerrainEnabled: boolean;
   farTerrainEnabled: boolean;
   waterEnabled: boolean;
@@ -295,6 +296,7 @@ export interface RendererSettings {
   farTerrainEnabled: boolean;
   waterEnabled: boolean;
   vegetationEnabled: boolean;
+  lodSeamSkirtsEnabled: boolean;
   fogDensity: number;
   materialDetail: number;
   exposure: number;
