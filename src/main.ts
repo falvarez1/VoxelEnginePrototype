@@ -3,6 +3,7 @@ import { Renderer } from './renderer.ts';
 import { EngineConsole } from './console.ts';
 import { registerEngineConsoleCommands } from './console_commands.ts';
 import { CameraTour, type BenchmarkResult, type Tour, type Waypoint } from './camera_tour.ts';
+import { BUILTIN_TOURS } from './tour_presets.ts';
 import { createSettingsPanel, type BrushInspectorBar, type BrushInspectorPanelState, type BrushPresetPanelState, type EditHistoryPanelItem, type RegionDiffPanelItem, type RegionDiffPanelState, type SettingsPanel } from './settings_panel.ts';
 import { RuntimeProfiler } from './profiler.ts';
 import { CompressedChunkCache, type PersistedChunkMesh } from './chunk_cache.ts';
@@ -6822,6 +6823,30 @@ async function main() {
         game.resetProgress();
         refreshGameMarkers();
         await emitAutomationStateAfterAction(action, { completed: true });
+      } else if (normalized === 'tour' || normalized === 'tourcapture' || normalized === 'capturetour') {
+        const params = new URLSearchParams(window.location.search);
+        const tourName = params.get('tour') ?? params.get('tour.name') ?? params.get('auto.tour') ?? 'baseline';
+        try {
+          startTour(tourName);
+        } catch (error) {
+          await emitAutomationReport(action, {
+            type: 'storm-canyon-tour-error',
+            version: 1,
+            action,
+            tour: tourName,
+            message: error instanceof Error ? error.message : String(error),
+          });
+          return;
+        }
+        const result = await cameraTour.whenComplete();
+        if (result) lastTourResult = result;
+        await emitAutomationReport(action, result ?? {
+          type: 'storm-canyon-tour-error',
+          version: 1,
+          action,
+          tour: tourName,
+          message: 'Tour produced no result.',
+        });
       } else {
         await emitAutomationReport(action, {
           type: 'storm-canyon-automation-error',
@@ -6985,6 +7010,7 @@ async function main() {
   });
 
   const cameraTour = new CameraTour();
+  for (const [name, tour] of Object.entries(BUILTIN_TOURS)) cameraTour.registerBuiltin(name, tour);
   let lastTourResult: BenchmarkResult | null = null;
   const tourSettingsSnapshot = (): Record<string, unknown> => ({ ...settings });
   const tourCapabilitiesSnapshot = (): Record<string, unknown> => ({ ...renderer.capabilities });

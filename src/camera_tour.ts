@@ -203,6 +203,8 @@ export class CameraTour {
   private overrideFov = false;
   private lastResult: BenchmarkResult | null = null;
   private persisted = loadPersisted();
+  private builtins = new Map<string, Tour>();
+  private completionResolvers: Array<(result: BenchmarkResult | null) => void> = [];
 
   isActive(): boolean {
     return this.state === 'playing' || this.state === 'paused';
@@ -221,12 +223,25 @@ export class CameraTour {
   }
 
   listSaved(): string[] {
-    return Object.keys(this.persisted.saved).sort();
+    const all = new Set<string>([...Object.keys(this.persisted.saved), ...this.builtins.keys()]);
+    return Array.from(all).sort();
   }
 
   getSaved(name: string): Tour | null {
-    const tour = this.persisted.saved[name];
-    return tour ? { ...tour, waypoints: tour.waypoints.map(w => ({ ...w, position: [...w.position] })) } : null;
+    const saved = this.persisted.saved[name];
+    if (saved) return { ...saved, waypoints: saved.waypoints.map(w => ({ ...w, position: [...w.position] })) };
+    const builtin = this.builtins.get(name);
+    if (builtin) return { ...builtin, waypoints: builtin.waypoints.map(w => ({ ...w, position: [...w.position] })) };
+    return null;
+  }
+
+  registerBuiltin(name: string, tour: Tour): void {
+    this.builtins.set(name, tour);
+  }
+
+  whenComplete(): Promise<BenchmarkResult | null> {
+    if (this.state === 'idle' || this.state === 'done') return Promise.resolve(this.lastResult);
+    return new Promise(resolve => this.completionResolvers.push(resolve));
   }
 
   addWaypoint(camera: CameraLike, opts: { spacingMs?: number; timeMs?: number; fov?: boolean } = {}): Waypoint {
@@ -356,6 +371,8 @@ export class CameraTour {
     if (this.overrideFov) camera.fovDegrees = this.originalFov;
     const result = this.buildResult(tour, this.startWallMs, this.startWallMs + elapsed, elapsed, contextSettings, contextCapabilities);
     this.lastResult = result;
+    const resolvers = this.completionResolvers.splice(0);
+    for (const resolve of resolvers) resolve(result);
     return result;
   }
 

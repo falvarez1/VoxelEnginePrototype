@@ -122,6 +122,25 @@ with type `"storm-canyon-camera-tour-benchmark"`. Inside:
 - `context`: snapshot of `renderer.capabilities`, settings, and
   user agent.
 
+A built-in baseline tour (`baseline-canyon-flyover`, also reachable as
+`baseline`) lives in `src/tour_presets.ts`. The canonical captured
+benchmark is at `docs/tour-baselines/baseline.json` — use that as the
+"baseline" side of every comparison. Capture a fresh one with:
+
+```
+npm run tour:capture                          # uses the built-in baseline tour
+npm run tour:capture -- --tour <name>         # any built-in or saved tour
+npm run tour:capture -- --out path.json       # override output path
+npm run tour:capture -- --skip-build          # use existing dist/
+npm run tour:capture -- --no-browser          # serve only; you'll open the URL by hand
+```
+
+The capture script builds the app, starts `scripts/serve.mjs`,
+launches Chrome (or whatever STORM_CANYON_BROWSER points at) with the
+right URL automation params (`automation=1&automation.actions=tour&tour=<name>`),
+polls `/__storm/automation-report/latest` until the
+`storm-canyon-camera-tour-benchmark` payload arrives, and saves it.
+
 To compare two tour artifacts (e.g., before and after a tweak):
 
 ```

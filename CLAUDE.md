@@ -116,6 +116,7 @@ npm run visual:regression        # needs Playwright browsers
 npm run visual:capture           # needs Playwright browsers
 npm run benchmark                # WASM perf benchmarks
 npm run benchmark:review         # diff two benchmark artifacts
+npm run tour:capture             # build + serve + drive Chrome + save baseline JSON
 npm run tour:review              # diff two camera-tour benchmark artifacts
 ```
 
