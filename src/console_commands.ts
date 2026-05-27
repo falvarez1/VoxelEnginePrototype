@@ -69,17 +69,23 @@ export const DEBUG_VIEW_NAMES: Record<string, number> = {
   material: 2,
   materials: 2,
   materialid: 2,
-  materialmask: 3,
-  masks: 3,
-  biome: 4,
-  wetness: 5,
-  snow: 6,
-  ao: 7,
-  ambientocclusion: 7,
-  chunkid: 8,
-  chunkids: 8,
-  dirty: 9,
-  dirtyregions: 9,
+  ao: 3,
+  ambientocclusion: 3,
+  chunkid: 4,
+  chunkids: 4,
+  density: 5,
+  'density-slice': 5,
+  densityslice: 5,
+  dirty: 6,
+  'dirty-regions': 6,
+  dirtyregions: 6,
+  materialmask: 7,
+  'material-masks': 7,
+  masks: 7,
+  biome: 8,
+  biomes: 8,
+  wetness: 9,
+  snow: 10,
 };
 
 export const PAINT_MATERIAL_NAMES: Record<string, number> = {
@@ -108,11 +114,11 @@ export const BRUSH_SHAPE_NAMES: Record<string, number> = {
 };
 
 export const QUALITY_PRESET_NAMES: Record<string, number> = {
-  auto: 0,
-  low: 1,
-  balanced: 2,
-  high: 3,
-  ultra: 4,
+  low: 0,
+  balanced: 1,
+  high: 2,
+  ultra: 3,
+  auto: 4,
 };
 
 export interface CameraLike {

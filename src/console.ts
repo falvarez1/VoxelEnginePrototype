@@ -196,6 +196,9 @@ export class EngineConsole {
 
   private onWindowKey(event: KeyboardEvent): void {
     if (TOGGLE_CODES.has(event.code) && !event.ctrlKey && !event.metaKey && !event.altKey) {
+      if (event.shiftKey && this.isOpen && event.target === this.inputEl) {
+        return;
+      }
       event.preventDefault();
       event.stopPropagation();
       this.toggle();
@@ -205,6 +208,10 @@ export class EngineConsole {
       event.preventDefault();
       event.stopPropagation();
       this.close();
+      return;
+    }
+    if (this.isOpen && event.target === this.inputEl) {
+      event.stopPropagation();
     }
   }
 
@@ -258,9 +265,16 @@ export class EngineConsole {
     if (firstSpace !== -1) return;
     const prefix = value.toLowerCase();
     const matches: string[] = [];
-    for (const name of this.commands.keys()) {
-      if (name.startsWith(prefix)) matches.push(name);
-    }
+    const seen = new Set<string>();
+    const consider = (name: string): void => {
+      if (!name.startsWith(prefix) || seen.has(name)) return;
+      seen.add(name);
+      matches.push(name);
+    };
+    consider('help');
+    consider('clear');
+    for (const name of this.aliases.keys()) consider(name);
+    for (const name of this.commands.keys()) consider(name);
     if (matches.length === 1) {
       this.inputEl.value = `${matches[0]} `;
     } else if (matches.length > 1) {
@@ -270,13 +284,17 @@ export class EngineConsole {
     }
   }
 
-  async execute(line: string): Promise<void> {
+  async execute(line: string, depth = 0): Promise<void> {
+    if (depth > 16) {
+      this.error('Console: alias/command expansion exceeded depth 16 (likely cycle).');
+      return;
+    }
     const trimmed = line.trim();
     if (trimmed.length === 0) return;
     if (trimmed.includes(';')) {
       for (const segment of trimmed.split(';')) {
         const sub = segment.trim();
-        if (sub.length > 0) await this.execute(sub);
+        if (sub.length > 0) await this.execute(sub, depth + 1);
       }
       return;
     }
@@ -296,7 +314,7 @@ export class EngineConsole {
     if (aliasBody) {
       const remainder = tokens.slice(1).join(' ');
       const expanded = remainder.length > 0 ? `${aliasBody} ${remainder}` : aliasBody;
-      await this.execute(expanded);
+      await this.execute(expanded, depth + 1);
       return;
     }
     const cmd = this.commands.get(name);
@@ -368,7 +386,24 @@ export class EngineConsole {
     const all = Array.from(new Set(this.commands.values()));
     all.sort((a, b) => a.name.localeCompare(b.name));
     if (filter) {
-      const cmd = this.commands.get(filter.toLowerCase());
+      const lower = filter.toLowerCase();
+      if (lower === 'help') {
+        this.log('help [name]');
+        this.log('  List commands, or show usage for a specific command.');
+        return;
+      }
+      if (lower === 'clear') {
+        this.log('clear');
+        this.log('  Clear console output.');
+        return;
+      }
+      const aliasBody = this.aliases.get(lower);
+      if (aliasBody) {
+        this.log(`${filter} (alias)`);
+        this.log(`  expands to: ${aliasBody}`);
+        return;
+      }
+      const cmd = this.commands.get(lower);
       if (!cmd) {
         this.error(`No such command: ${filter}`);
         return;

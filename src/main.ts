@@ -6986,7 +6986,7 @@ async function main() {
   const engineConsole = new EngineConsole(document.body);
   registerEngineConsoleCommands(engineConsole, {
     getSettings: () => settings,
-    setSettings: (next, key) => setSettings(next, key),
+    setSettings: (next, key) => setSettings(next, key === 'qualityPreset' ? 'qualityPreset' : 'all'),
     defaultSettings: DEFAULT_ENGINE_SETTINGS,
     parseSettingValue: parseSettingValueForUrl,
     dispatchAction: dispatchSettingsAction,
@@ -7017,7 +7017,11 @@ async function main() {
       resetProgress: () => { game.resetProgress(); refreshGameMarkers(); },
     },
     worldgenProbe: (x, z) => {
-      const probeCamera = { ...camera, position: vec3(x, camera.position[1], z) };
+      const probeForward = camera.forward();
+      const probeCamera: Pick<FlyCamera, 'position' | 'forward'> = {
+        position: vec3(x, camera.position[1], z),
+        forward: () => probeForward,
+      };
       const snapshot = worldgenSnapshot(probeCamera as unknown as FlyCamera, settings);
       return snapshot.camera as unknown as Record<string, number | string>;
     },
@@ -7042,7 +7046,15 @@ async function main() {
     },
     regionSlotList: () => REGION_SLOTS.map((slot, index) => {
       const name = regionSlotFromSettings({ ...settings, regionSlot: index }).name;
-      return { index, key: slot.key, name };
+      const info = regionSlotInfos.find(entry => entry.key === slot.key);
+      return {
+        index,
+        key: slot.key,
+        name,
+        chunks: info?.chunkCount,
+        edits: info?.editCount,
+        savedAt: info?.savedAt,
+      };
     }),
     tileCacheStats: (name) => {
       if (name === 'chunk') {
