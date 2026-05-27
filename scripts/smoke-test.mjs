@@ -189,8 +189,8 @@ if (e.get_erosion_tile_field_count() !== 11) {
 if (e.get_erosion_tile_size() !== 256) {
   throw new Error(`Expected 256m native erosion tiles, got ${e.get_erosion_tile_size()}`);
 }
-if (e.get_erosion_tile_schema_version() !== 1 || e.get_erosion_tile_generator_version() !== 1) {
-  throw new Error(`Expected native erosion schema/generator 1/1, got ${e.get_erosion_tile_schema_version()}/${e.get_erosion_tile_generator_version()}`);
+if (e.get_erosion_tile_schema_version() !== 1 || e.get_erosion_tile_generator_version() !== 2) {
+  throw new Error(`Expected native erosion schema/generator 1/2, got ${e.get_erosion_tile_schema_version()}/${e.get_erosion_tile_generator_version()}`);
 }
 if (e.get_material_tile_resolution() !== 17) {
   throw new Error(`Expected 17x17 native material tiles, got ${e.get_material_tile_resolution()}`);

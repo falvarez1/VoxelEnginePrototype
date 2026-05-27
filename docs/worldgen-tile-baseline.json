@@ -1,6 +1,6 @@
 {
   "version": 9,
-  "generatedAt": "2026-05-25T08:54:40.473Z",
+  "generatedAt": "2026-05-27T18:43:44.975Z",
   "scenes": [
     {
       "name": "origin-canyon",
@@ -13551,7 +13551,7 @@
       "name": "origin-canyon",
       "exportSchemaVersion": 1,
       "tileSchemaVersion": 1,
-      "generatorVersion": 1,
+      "generatorVersion": 2,
       "center": {
         "x": 0,
         "z": 0,
@@ -13586,7 +13586,7 @@
           "tileZ": -1,
           "originX": -256,
           "originZ": -256,
-          "fieldHash": "0x928eedf441a3b793",
+          "fieldHash": "0xd5e0f9de3c4edbcb",
           "fields": [
             {
               "name": "height",
@@ -13614,45 +13614,45 @@
             },
             {
               "name": "thermalErosion",
-              "min": 0.07023,
-              "max": 0.535014,
-              "mean": 0.175482
+              "min": 0,
+              "max": 0.071875,
+              "mean": 0.001049
             },
             {
               "name": "hydraulicErosion",
-              "min": 0.044309,
-              "max": 0.824139,
-              "mean": 0.155356
+              "min": 0,
+              "max": 0.013119,
+              "mean": 0.00145
             },
             {
               "name": "deposition",
-              "min": 0.039213,
-              "max": 0.783349,
-              "mean": 0.167939
+              "min": 0,
+              "max": 0.071875,
+              "mean": 0.001675
             },
             {
               "name": "sedimentLoad",
-              "min": 0.082362,
-              "max": 0.652658,
-              "mean": 0.196169
+              "min": 0,
+              "max": 0.024347,
+              "mean": 0.001234
             },
             {
               "name": "bedrockExposure",
-              "min": 0.029088,
-              "max": 0.355155,
-              "mean": 0.106716
+              "min": 0,
+              "max": 0.078431,
+              "mean": 0.014545
             },
             {
               "name": "soilDepth",
-              "min": 0.29111,
-              "max": 0.675768,
-              "mean": 0.454423
+              "min": 0.231818,
+              "max": 0.457147,
+              "mean": 0.380112
             },
             {
               "name": "vegetationRetention",
-              "min": 0.0529,
-              "max": 0.537873,
-              "mean": 0.366696
+              "min": 0.000129,
+              "max": 0.534834,
+              "mean": 0.368862
             }
           ]
         },
@@ -13662,7 +13662,7 @@
           "tileZ": -1,
           "originX": 0,
           "originZ": -256,
-          "fieldHash": "0x3497297e0309156e",
+          "fieldHash": "0x475e857b742684bb",
           "fields": [
             {
               "name": "height",
@@ -13690,45 +13690,45 @@
             },
             {
               "name": "thermalErosion",
-              "min": 0.051855,
-              "max": 0.535014,
-              "mean": 0.147469
+              "min": 0,
+              "max": 0.28933,
+              "mean": 0.002318
             },
             {
               "name": "hydraulicErosion",
-              "min": 0.058542,
-              "max": 0.843481,
-              "mean": 0.150139
+              "min": 0,
+              "max": 0.014821,
+              "mean": 0.001317
             },
             {
               "name": "deposition",
-              "min": 0.058747,
-              "max": 0.782221,
-              "mean": 0.171002
+              "min": 0,
+              "max": 0.28933,
+              "mean": 0.00279
             },
             {
               "name": "sedimentLoad",
-              "min": 0.085287,
-              "max": 0.694155,
-              "mean": 0.182105
+              "min": 0,
+              "max": 0.018706,
+              "mean": 0.001266
             },
             {
               "name": "bedrockExposure",
-              "min": 0.02285,
-              "max": 0.357235,
-              "mean": 0.087149
+              "min": 0,
+              "max": 0.293627,
+              "mean": 0.013056
             },
             {
               "name": "soilDepth",
-              "min": 0.299025,
-              "max": 0.670369,
-              "mean": 0.482355
+              "min": 0.230424,
+              "max": 0.468945,
+              "mean": 0.402575
             },
             {
               "name": "vegetationRetention",
               "min": 0,
-              "max": 0.553042,
-              "mean": 0.418519
+              "max": 0.547145,
+              "mean": 0.415219
             }
           ]
         },
@@ -13738,7 +13738,7 @@
           "tileZ": -1,
           "originX": 256,
           "originZ": -256,
-          "fieldHash": "0xb0d9a6060f70e2cd",
+          "fieldHash": "0x091a70b8eb736486",
           "fields": [
             {
               "name": "height",
@@ -13766,45 +13766,45 @@
             },
             {
               "name": "thermalErosion",
-              "min": 0.036411,
-              "max": 0.217161,
-              "mean": 0.096094
+              "min": 0,
+              "max": 0,
+              "mean": 0
             },
             {
               "name": "hydraulicErosion",
-              "min": 0.052786,
-              "max": 0.147619,
-              "mean": 0.090059
+              "min": 0,
+              "max": 0.012999,
+              "mean": 0.001091
             },
             {
               "name": "deposition",
-              "min": 0.051812,
-              "max": 0.201008,
-              "mean": 0.112748
+              "min": 0,
+              "max": 0.015576,
+              "mean": 0.000414
             },
             {
               "name": "sedimentLoad",
-              "min": 0.073839,
-              "max": 0.213235,
-              "mean": 0.116676
+              "min": 0,
+              "max": 0.025646,
+              "mean": 0.001016
             },
             {
               "name": "bedrockExposure",
-              "min": 0.01286,
-              "max": 0.13812,
-              "mean": 0.050896
+              "min": 0,
+              "max": 0.027271,
+              "mean": 0.005938
             },
             {
               "name": "soilDepth",
-              "min": 0.392335,
-              "max": 0.545653,
-              "mean": 0.472996
+              "min": 0.370365,
+              "max": 0.459917,
+              "mean": 0.418633
             },
             {
               "name": "vegetationRetention",
-              "min": 0.349089,
-              "max": 0.540622,
-              "mean": 0.459665
+              "min": 0.354375,
+              "max": 0.527618,
+              "mean": 0.457227
             }
           ]
         },
@@ -13814,7 +13814,7 @@
           "tileZ": 0,
           "originX": -256,
           "originZ": 0,
-          "fieldHash": "0x1ba24d5f321e96d1",
+          "fieldHash": "0x7587e36226dff3f4",
           "fields": [
             {
               "name": "height",
@@ -13842,45 +13842,45 @@
             },
             {
               "name": "thermalErosion",
-              "min": 0.046854,
-              "max": 0.302213,
-              "mean": 0.141847
+              "min": 0,
+              "max": 0.016337,
+              "mean": 0.000057
             },
             {
               "name": "hydraulicErosion",
-              "min": 0.049845,
-              "max": 0.824603,
-              "mean": 0.107301
+              "min": 0,
+              "max": 0.015324,
+              "mean": 0.00114
             },
             {
               "name": "deposition",
-              "min": 0.044121,
-              "max": 0.78228,
-              "mean": 0.123816
+              "min": 0,
+              "max": 0.019014,
+              "mean": 0.000519
             },
             {
               "name": "sedimentLoad",
-              "min": 0.073728,
-              "max": 0.640332,
-              "mean": 0.14776
+              "min": 0,
+              "max": 0.0208,
+              "mean": 0.001017
             },
             {
               "name": "bedrockExposure",
-              "min": 0.016974,
-              "max": 0.204105,
-              "mean": 0.082117
+              "min": 0,
+              "max": 0.042433,
+              "mean": 0.010311
             },
             {
               "name": "soilDepth",
-              "min": 0.34631,
-              "max": 0.670306,
-              "mean": 0.449044
+              "min": 0.237281,
+              "max": 0.460454,
+              "mean": 0.394766
             },
             {
               "name": "vegetationRetention",
-              "min": 0.077048,
-              "max": 0.553764,
-              "mean": 0.40201
+              "min": 0.000902,
+              "max": 0.543051,
+              "mean": 0.40567
             }
           ]
         },
@@ -13890,7 +13890,7 @@
           "tileZ": 0,
           "originX": 0,
           "originZ": 0,
-          "fieldHash": "0x393c6cafcdaad1a3",
+          "fieldHash": "0x56d5558fc81f0a2d",
           "fields": [
             {
               "name": "height",
@@ -13918,45 +13918,45 @@
             },
             {
               "name": "thermalErosion",
-              "min": 0.072046,
-              "max": 0.336237,
-              "mean": 0.154633
+              "min": 0,
+              "max": 0.012303,
+              "mean": 0.000043
             },
             {
               "name": "hydraulicErosion",
-              "min": 0.05044,
-              "max": 0.824603,
-              "mean": 0.182008
+              "min": 0,
+              "max": 0.010245,
+              "mean": 0.001428
             },
             {
               "name": "deposition",
-              "min": 0.050885,
-              "max": 0.782731,
-              "mean": 0.204566
+              "min": 0,
+              "max": 0.016699,
+              "mean": 0.000537
             },
             {
               "name": "sedimentLoad",
-              "min": 0.083465,
-              "max": 0.640332,
-              "mean": 0.205702
+              "min": 0,
+              "max": 0.017552,
+              "mean": 0.0014
             },
             {
               "name": "bedrockExposure",
-              "min": 0.032952,
-              "max": 0.229079,
-              "mean": 0.09074
+              "min": 0,
+              "max": 0.044633,
+              "mean": 0.011384
             },
             {
               "name": "soilDepth",
-              "min": 0.353155,
-              "max": 0.673913,
-              "mean": 0.470168
+              "min": 0.233839,
+              "max": 0.458863,
+              "mean": 0.370877
             },
             {
               "name": "vegetationRetention",
-              "min": 0.071014,
-              "max": 0.550059,
-              "mean": 0.354457
+              "min": 0,
+              "max": 0.532951,
+              "mean": 0.346195
             }
           ]
         },
@@ -13966,7 +13966,7 @@
           "tileZ": 0,
           "originX": 256,
           "originZ": 0,
-          "fieldHash": "0xfa85fdd3e4aecb22",
+          "fieldHash": "0x85a8e45821c456be",
           "fields": [
             {
               "name": "height",
@@ -13994,45 +13994,45 @@
             },
             {
               "name": "thermalErosion",
-              "min": 0.029022,
-              "max": 0.262902,
-              "mean": 0.107945
+              "min": 0,
+              "max": 0,
+              "mean": 0
             },
             {
               "name": "hydraulicErosion",
-              "min": 0.047332,
-              "max": 0.13478,
-              "mean": 0.084535
+              "min": 0,
+              "max": 0.006091,
+              "mean": 0.000894
             },
             {
               "name": "deposition",
-              "min": 0.04651,
-              "max": 0.196386,
-              "mean": 0.106045
+              "min": 0,
+              "max": 0.009616,
+              "mean": 0.000283
             },
             {
               "name": "sedimentLoad",
-              "min": 0.056153,
-              "max": 0.207339,
-              "mean": 0.116996
+              "min": 0,
+              "max": 0.013401,
+              "mean": 0.000916
             },
             {
               "name": "bedrockExposure",
-              "min": 0.01411,
-              "max": 0.181746,
-              "mean": 0.058788
+              "min": 0,
+              "max": 0.036855,
+              "mean": 0.007121
             },
             {
               "name": "soilDepth",
-              "min": 0.36281,
-              "max": 0.528777,
-              "mean": 0.454971
+              "min": 0.338764,
+              "max": 0.450705,
+              "mean": 0.406029
             },
             {
               "name": "vegetationRetention",
-              "min": 0.268967,
-              "max": 0.534236,
-              "mean": 0.431093
+              "min": 0.295845,
+              "max": 0.522619,
+              "mean": 0.4317
             }
           ]
         },
@@ -14042,7 +14042,7 @@
           "tileZ": 1,
           "originX": -256,
           "originZ": 256,
-          "fieldHash": "0x309070ac9f4c48a9",
+          "fieldHash": "0xff6b42935b8e016f",
           "fields": [
             {
               "name": "height",
@@ -14070,45 +14070,45 @@
             },
             {
               "name": "thermalErosion",
-              "min": 0.052056,
-              "max": 0.297113,
-              "mean": 0.126813
+              "min": 0,
+              "max": 0.02442,
+              "mean": 0.000084
             },
             {
               "name": "hydraulicErosion",
-              "min": 0.04225,
-              "max": 0.814768,
-              "mean": 0.13363
+              "min": 0,
+              "max": 0.012699,
+              "mean": 0.001362
             },
             {
               "name": "deposition",
-              "min": 0.036881,
-              "max": 0.782477,
-              "mean": 0.151718
+              "min": 0,
+              "max": 0.02442,
+              "mean": 0.000544
             },
             {
               "name": "sedimentLoad",
-              "min": 0.058712,
-              "max": 0.637694,
-              "mean": 0.15772
+              "min": 0,
+              "max": 0.021417,
+              "mean": 0.001353
             },
             {
               "name": "bedrockExposure",
-              "min": 0.024051,
-              "max": 0.231352,
-              "mean": 0.074319
+              "min": 0,
+              "max": 0.046169,
+              "mean": 0.009763
             },
             {
               "name": "soilDepth",
-              "min": 0.361837,
-              "max": 0.676716,
-              "mean": 0.46613
+              "min": 0.230511,
+              "max": 0.459316,
+              "mean": 0.393943
             },
             {
               "name": "vegetationRetention",
-              "min": 0.052584,
-              "max": 0.554957,
-              "mean": 0.405958
+              "min": 0.00081,
+              "max": 0.535479,
+              "mean": 0.40191
             }
           ]
         },
@@ -14118,7 +14118,7 @@
           "tileZ": 1,
           "originX": 0,
           "originZ": 256,
-          "fieldHash": "0x7a49d7068fc781c7",
+          "fieldHash": "0x1a276e9e620cf650",
           "fields": [
             {
               "name": "height",
@@ -14146,45 +14146,45 @@
             },
             {
               "name": "thermalErosion",
-              "min": 0.034368,
-              "max": 0.372842,
-              "mean": 0.155996
+              "min": 0,
+              "max": 0.179872,
+              "mean": 0.000902
             },
             {
               "name": "hydraulicErosion",
-              "min": 0.038781,
-              "max": 0.815008,
-              "mean": 0.144259
+              "min": 0,
+              "max": 0.010257,
+              "mean": 0.001421
             },
             {
               "name": "deposition",
-              "min": 0.03335,
-              "max": 0.782175,
-              "mean": 0.165272
+              "min": 0,
+              "max": 0.180318,
+              "mean": 0.001542
             },
             {
               "name": "sedimentLoad",
-              "min": 0.061035,
-              "max": 0.637694,
-              "mean": 0.178931
+              "min": 0,
+              "max": 0.01754,
+              "mean": 0.001173
             },
             {
               "name": "bedrockExposure",
-              "min": 0.019981,
-              "max": 0.243456,
-              "mean": 0.090924
+              "min": 0,
+              "max": 0.191489,
+              "mean": 0.012226
             },
             {
               "name": "soilDepth",
-              "min": 0.310526,
-              "max": 0.67733,
-              "mean": 0.449584
+              "min": 0.235677,
+              "max": 0.447596,
+              "mean": 0.373508
             },
             {
               "name": "vegetationRetention",
-              "min": 0.052584,
-              "max": 0.522495,
-              "mean": 0.357094
+              "min": 0.000694,
+              "max": 0.515747,
+              "mean": 0.355674
             }
           ]
         },
@@ -14194,7 +14194,7 @@
           "tileZ": 1,
           "originX": 256,
           "originZ": 256,
-          "fieldHash": "0x30dcd3ffe472b850",
+          "fieldHash": "0x7652592e2a07a882",
           "fields": [
             {
               "name": "height",
@@ -14222,45 +14222,45 @@
             },
             {
               "name": "thermalErosion",
-              "min": 0.034368,
-              "max": 0.413637,
-              "mean": 0.171595
+              "min": 0,
+              "max": 0.15984,
+              "mean": 0.001816
             },
             {
               "name": "hydraulicErosion",
-              "min": 0.037724,
-              "max": 0.15962,
-              "mean": 0.075393
+              "min": 0,
+              "max": 0.013525,
+              "mean": 0.001255
             },
             {
               "name": "deposition",
-              "min": 0.037693,
-              "max": 0.209304,
-              "mean": 0.088834
+              "min": 0,
+              "max": 0.15984,
+              "mean": 0.002295
             },
             {
               "name": "sedimentLoad",
-              "min": 0.061035,
-              "max": 0.243631,
-              "mean": 0.136085
+              "min": 0,
+              "max": 0.019704,
+              "mean": 0.001164
             },
             {
               "name": "bedrockExposure",
-              "min": 0.019981,
-              "max": 0.274685,
-              "mean": 0.099242
+              "min": 0,
+              "max": 0.148855,
+              "mean": 0.013419
             },
             {
               "name": "soilDepth",
-              "min": 0.302393,
-              "max": 0.531529,
-              "mean": 0.428836
+              "min": 0.322136,
+              "max": 0.455038,
+              "mean": 0.399241
             },
             {
               "name": "vegetationRetention",
-              "min": 0.191148,
-              "max": 0.533749,
-              "mean": 0.404685
+              "min": 0.251496,
+              "max": 0.536717,
+              "mean": 0.419016
             }
           ]
         }
@@ -14270,7 +14270,7 @@
       "name": "river-bend",
       "exportSchemaVersion": 1,
       "tileSchemaVersion": 1,
-      "generatorVersion": 1,
+      "generatorVersion": 2,
       "center": {
         "x": -96,
         "z": 128,
@@ -14305,7 +14305,7 @@
           "tileZ": -1,
           "originX": -512,
           "originZ": -256,
-          "fieldHash": "0xc19b4a2e91200435",
+          "fieldHash": "0xb8b30864ed70363c",
           "fields": [
             {
               "name": "height",
@@ -14333,45 +14333,45 @@
             },
             {
               "name": "thermalErosion",
-              "min": 0.056257,
-              "max": 0.431736,
-              "mean": 0.172834
+              "min": 0,
+              "max": 0.02975,
+              "mean": 0.000154
             },
             {
               "name": "hydraulicErosion",
-              "min": 0.02703,
-              "max": 0.144461,
-              "mean": 0.076226
+              "min": 0,
+              "max": 0.015838,
+              "mean": 0.001679
             },
             {
               "name": "deposition",
-              "min": 0.024216,
-              "max": 0.183988,
-              "mean": 0.087704
+              "min": 0,
+              "max": 0.031576,
+              "mean": 0.000843
             },
             {
               "name": "sedimentLoad",
-              "min": 0.070555,
-              "max": 0.274994,
-              "mean": 0.137512
+              "min": 0,
+              "max": 0.025777,
+              "mean": 0.001486
             },
             {
               "name": "bedrockExposure",
-              "min": 0.025713,
-              "max": 0.311493,
-              "mean": 0.100503
+              "min": 0,
+              "max": 0.065964,
+              "mean": 0.012857
             },
             {
               "name": "soilDepth",
-              "min": 0.28491,
-              "max": 0.525267,
-              "mean": 0.420821
+              "min": 0.280706,
+              "max": 0.451566,
+              "mean": 0.391477
             },
             {
               "name": "vegetationRetention",
-              "min": 0.124158,
-              "max": 0.522858,
-              "mean": 0.388591
+              "min": 0.181368,
+              "max": 0.522229,
+              "mean": 0.403482
             }
           ]
         },
@@ -14381,7 +14381,7 @@
           "tileZ": -1,
           "originX": -256,
           "originZ": -256,
-          "fieldHash": "0x928eedf441a3b793",
+          "fieldHash": "0xd5e0f9de3c4edbcb",
           "fields": [
             {
               "name": "height",
@@ -14409,45 +14409,45 @@
             },
             {
               "name": "thermalErosion",
-              "min": 0.07023,
-              "max": 0.535014,
-              "mean": 0.175482
+              "min": 0,
+              "max": 0.071875,
+              "mean": 0.001049
             },
             {
               "name": "hydraulicErosion",
-              "min": 0.044309,
-              "max": 0.824139,
-              "mean": 0.155356
+              "min": 0,
+              "max": 0.013119,
+              "mean": 0.00145
             },
             {
               "name": "deposition",
-              "min": 0.039213,
-              "max": 0.783349,
-              "mean": 0.167939
+              "min": 0,
+              "max": 0.071875,
+              "mean": 0.001675
             },
             {
               "name": "sedimentLoad",
-              "min": 0.082362,
-              "max": 0.652658,
-              "mean": 0.196169
+              "min": 0,
+              "max": 0.024347,
+              "mean": 0.001234
             },
             {
               "name": "bedrockExposure",
-              "min": 0.029088,
-              "max": 0.355155,
-              "mean": 0.106716
+              "min": 0,
+              "max": 0.078431,
+              "mean": 0.014545
             },
             {
               "name": "soilDepth",
-              "min": 0.29111,
-              "max": 0.675768,
-              "mean": 0.454423
+              "min": 0.231818,
+              "max": 0.457147,
+              "mean": 0.380112
             },
             {
               "name": "vegetationRetention",
-              "min": 0.0529,
-              "max": 0.537873,
-              "mean": 0.366696
+              "min": 0.000129,
+              "max": 0.534834,
+              "mean": 0.368862
             }
           ]
         },
@@ -14457,7 +14457,7 @@
           "tileZ": -1,
           "originX": 0,
           "originZ": -256,
-          "fieldHash": "0x3497297e0309156e",
+          "fieldHash": "0x475e857b742684bb",
           "fields": [
             {
               "name": "height",
@@ -14485,45 +14485,45 @@
             },
             {
               "name": "thermalErosion",
-              "min": 0.051855,
-              "max": 0.535014,
-              "mean": 0.147469
+              "min": 0,
+              "max": 0.28933,
+              "mean": 0.002318
             },
             {
               "name": "hydraulicErosion",
-              "min": 0.058542,
-              "max": 0.843481,
-              "mean": 0.150139
+              "min": 0,
+              "max": 0.014821,
+              "mean": 0.001317
             },
             {
               "name": "deposition",
-              "min": 0.058747,
-              "max": 0.782221,
-              "mean": 0.171002
+              "min": 0,
+              "max": 0.28933,
+              "mean": 0.00279
             },
             {
               "name": "sedimentLoad",
-              "min": 0.085287,
-              "max": 0.694155,
-              "mean": 0.182105
+              "min": 0,
+              "max": 0.018706,
+              "mean": 0.001266
             },
             {
               "name": "bedrockExposure",
-              "min": 0.02285,
-              "max": 0.357235,
-              "mean": 0.087149
+              "min": 0,
+              "max": 0.293627,
+              "mean": 0.013056
             },
             {
               "name": "soilDepth",
-              "min": 0.299025,
-              "max": 0.670369,
-              "mean": 0.482355
+              "min": 0.230424,
+              "max": 0.468945,
+              "mean": 0.402575
             },
             {
               "name": "vegetationRetention",
               "min": 0,
-              "max": 0.553042,
-              "mean": 0.418519
+              "max": 0.547145,
+              "mean": 0.415219
             }
           ]
         },
@@ -14533,7 +14533,7 @@
           "tileZ": 0,
           "originX": -512,
           "originZ": 0,
-          "fieldHash": "0xd66fb4fe562ecd10",
+          "fieldHash": "0x556905e277ad66bb",
           "fields": [
             {
               "name": "height",
@@ -14561,45 +14561,45 @@
             },
             {
               "name": "thermalErosion",
-              "min": 0.062169,
-              "max": 0.307391,
-              "mean": 0.147425
+              "min": 0,
+              "max": 0.051974,
+              "mean": 0.00018
             },
             {
               "name": "hydraulicErosion",
-              "min": 0.039873,
-              "max": 0.135641,
-              "mean": 0.076632
+              "min": 0,
+              "max": 0.011885,
+              "mean": 0.001419
             },
             {
               "name": "deposition",
-              "min": 0.03222,
-              "max": 0.186919,
-              "mean": 0.088962
+              "min": 0,
+              "max": 0.051974,
+              "mean": 0.000607
             },
             {
               "name": "sedimentLoad",
-              "min": 0.071274,
-              "max": 0.215089,
-              "mean": 0.127127
+              "min": 0,
+              "max": 0.028322,
+              "mean": 0.001489
             },
             {
               "name": "bedrockExposure",
-              "min": 0.021952,
-              "max": 0.214509,
-              "mean": 0.08458
+              "min": 0,
+              "max": 0.062457,
+              "mean": 0.010459
             },
             {
               "name": "soilDepth",
-              "min": 0.346905,
-              "max": 0.549113,
-              "mean": 0.43842
+              "min": 0.334069,
+              "max": 0.463904,
+              "mean": 0.404964
             },
             {
               "name": "vegetationRetention",
-              "min": 0.25317,
-              "max": 0.541815,
-              "mean": 0.421402
+              "min": 0.289649,
+              "max": 0.534723,
+              "mean": 0.431795
             }
           ]
         },
@@ -14609,7 +14609,7 @@
           "tileZ": 0,
           "originX": -256,
           "originZ": 0,
-          "fieldHash": "0x1ba24d5f321e96d1",
+          "fieldHash": "0x7587e36226dff3f4",
           "fields": [
             {
               "name": "height",
@@ -14637,45 +14637,45 @@
             },
             {
               "name": "thermalErosion",
-              "min": 0.046854,
-              "max": 0.302213,
-              "mean": 0.141847
+              "min": 0,
+              "max": 0.016337,
+              "mean": 0.000057
             },
             {
               "name": "hydraulicErosion",
-              "min": 0.049845,
-              "max": 0.824603,
-              "mean": 0.107301
+              "min": 0,
+              "max": 0.015324,
+              "mean": 0.00114
             },
             {
               "name": "deposition",
-              "min": 0.044121,
-              "max": 0.78228,
-              "mean": 0.123816
+              "min": 0,
+              "max": 0.019014,
+              "mean": 0.000519
             },
             {
               "name": "sedimentLoad",
-              "min": 0.073728,
-              "max": 0.640332,
-              "mean": 0.14776
+              "min": 0,
+              "max": 0.0208,
+              "mean": 0.001017
             },
             {
               "name": "bedrockExposure",
-              "min": 0.016974,
-              "max": 0.204105,
-              "mean": 0.082117
+              "min": 0,
+              "max": 0.042433,
+              "mean": 0.010311
             },
             {
               "name": "soilDepth",
-              "min": 0.34631,
-              "max": 0.670306,
-              "mean": 0.449044
+              "min": 0.237281,
+              "max": 0.460454,
+              "mean": 0.394766
             },
             {
               "name": "vegetationRetention",
-              "min": 0.077048,
-              "max": 0.553764,
-              "mean": 0.40201
+              "min": 0.000902,
+              "max": 0.543051,
+              "mean": 0.40567
             }
           ]
         },
@@ -14685,7 +14685,7 @@
           "tileZ": 0,
           "originX": 0,
           "originZ": 0,
-          "fieldHash": "0x393c6cafcdaad1a3",
+          "fieldHash": "0x56d5558fc81f0a2d",
           "fields": [
             {
               "name": "height",
@@ -14713,45 +14713,45 @@
             },
             {
               "name": "thermalErosion",
-              "min": 0.072046,
-              "max": 0.336237,
-              "mean": 0.154633
+              "min": 0,
+              "max": 0.012303,
+              "mean": 0.000043
             },
             {
               "name": "hydraulicErosion",
-              "min": 0.05044,
-              "max": 0.824603,
-              "mean": 0.182008
+              "min": 0,
+              "max": 0.010245,
+              "mean": 0.001428
             },
             {
               "name": "deposition",
-              "min": 0.050885,
-              "max": 0.782731,
-              "mean": 0.204566
+              "min": 0,
+              "max": 0.016699,
+              "mean": 0.000537
             },
             {
               "name": "sedimentLoad",
-              "min": 0.083465,
-              "max": 0.640332,
-              "mean": 0.205702
+              "min": 0,
+              "max": 0.017552,
+              "mean": 0.0014
             },
             {
               "name": "bedrockExposure",
-              "min": 0.032952,
-              "max": 0.229079,
-              "mean": 0.09074
+              "min": 0,
+              "max": 0.044633,
+              "mean": 0.011384
             },
             {
               "name": "soilDepth",
-              "min": 0.353155,
-              "max": 0.673913,
-              "mean": 0.470168
+              "min": 0.233839,
+              "max": 0.458863,
+              "mean": 0.370877
             },
             {
               "name": "vegetationRetention",
-              "min": 0.071014,
-              "max": 0.550059,
-              "mean": 0.354457
+              "min": 0,
+              "max": 0.532951,
+              "mean": 0.346195
             }
           ]
         },
@@ -14761,7 +14761,7 @@
           "tileZ": 1,
           "originX": -512,
           "originZ": 256,
-          "fieldHash": "0xa1ea7602d44a480c",
+          "fieldHash": "0x4f18c0227c806e2e",
           "fields": [
             {
               "name": "height",
@@ -14789,45 +14789,45 @@
             },
             {
               "name": "thermalErosion",
-              "min": 0.040133,
-              "max": 0.243926,
-              "mean": 0.105503
+              "min": 0,
+              "max": 0.05172,
+              "mean": 0.000179
             },
             {
               "name": "hydraulicErosion",
-              "min": 0.047915,
-              "max": 0.198973,
-              "mean": 0.09373
+              "min": 0,
+              "max": 0.008378,
+              "mean": 0.000995
             },
             {
               "name": "deposition",
-              "min": 0.049518,
-              "max": 0.278047,
-              "mean": 0.118961
+              "min": 0,
+              "max": 0.051955,
+              "mean": 0.000567
             },
             {
               "name": "sedimentLoad",
-              "min": 0.069331,
-              "max": 0.231842,
-              "mean": 0.123314
+              "min": 0,
+              "max": 0.012648,
+              "mean": 0.000911
             },
             {
               "name": "bedrockExposure",
-              "min": 0.008066,
-              "max": 0.165733,
-              "mean": 0.056468
+              "min": 0,
+              "max": 0.071138,
+              "mean": 0.007018
             },
             {
               "name": "soilDepth",
-              "min": 0.371157,
-              "max": 0.585293,
-              "mean": 0.457646
+              "min": 0.351518,
+              "max": 0.455278,
+              "mean": 0.400846
             },
             {
               "name": "vegetationRetention",
-              "min": 0.31132,
-              "max": 0.533215,
-              "mean": 0.420682
+              "min": 0.309241,
+              "max": 0.510466,
+              "mean": 0.418629
             }
           ]
         },
@@ -14837,7 +14837,7 @@
           "tileZ": 1,
           "originX": -256,
           "originZ": 256,
-          "fieldHash": "0x309070ac9f4c48a9",
+          "fieldHash": "0xff6b42935b8e016f",
           "fields": [
             {
               "name": "height",
@@ -14865,45 +14865,45 @@
             },
             {
               "name": "thermalErosion",
-              "min": 0.052056,
-              "max": 0.297113,
-              "mean": 0.126813
+              "min": 0,
+              "max": 0.02442,
+              "mean": 0.000084
             },
             {
               "name": "hydraulicErosion",
-              "min": 0.04225,
-              "max": 0.814768,
-              "mean": 0.13363
+              "min": 0,
+              "max": 0.012699,
+              "mean": 0.001362
             },
             {
               "name": "deposition",
-              "min": 0.036881,
-              "max": 0.782477,
-              "mean": 0.151718
+              "min": 0,
+              "max": 0.02442,
+              "mean": 0.000544
             },
             {
               "name": "sedimentLoad",
-              "min": 0.058712,
-              "max": 0.637694,
-              "mean": 0.15772
+              "min": 0,
+              "max": 0.021417,
+              "mean": 0.001353
             },
             {
               "name": "bedrockExposure",
-              "min": 0.024051,
-              "max": 0.231352,
-              "mean": 0.074319
+              "min": 0,
+              "max": 0.046169,
+              "mean": 0.009763
             },
             {
               "name": "soilDepth",
-              "min": 0.361837,
-              "max": 0.676716,
-              "mean": 0.46613
+              "min": 0.230511,
+              "max": 0.459316,
+              "mean": 0.393943
             },
             {
               "name": "vegetationRetention",
-              "min": 0.052584,
-              "max": 0.554957,
-              "mean": 0.405958
+              "min": 0.00081,
+              "max": 0.535479,
+              "mean": 0.40191
             }
           ]
         },
@@ -14913,7 +14913,7 @@
           "tileZ": 1,
           "originX": 0,
           "originZ": 256,
-          "fieldHash": "0x7a49d7068fc781c7",
+          "fieldHash": "0x1a276e9e620cf650",
           "fields": [
             {
               "name": "height",
@@ -14941,45 +14941,45 @@
             },
             {
               "name": "thermalErosion",
-              "min": 0.034368,
-              "max": 0.372842,
-              "mean": 0.155996
+              "min": 0,
+              "max": 0.179872,
+              "mean": 0.000902
             },
             {
               "name": "hydraulicErosion",
-              "min": 0.038781,
-              "max": 0.815008,
-              "mean": 0.144259
+              "min": 0,
+              "max": 0.010257,
+              "mean": 0.001421
             },
             {
               "name": "deposition",
-              "min": 0.03335,
-              "max": 0.782175,
-              "mean": 0.165272
+              "min": 0,
+              "max": 0.180318,
+              "mean": 0.001542
             },
             {
               "name": "sedimentLoad",
-              "min": 0.061035,
-              "max": 0.637694,
-              "mean": 0.178931
+              "min": 0,
+              "max": 0.01754,
+              "mean": 0.001173
             },
             {
               "name": "bedrockExposure",
-              "min": 0.019981,
-              "max": 0.243456,
-              "mean": 0.090924
+              "min": 0,
+              "max": 0.191489,
+              "mean": 0.012226
             },
             {
               "name": "soilDepth",
-              "min": 0.310526,
-              "max": 0.67733,
-              "mean": 0.449584
+              "min": 0.235677,
+              "max": 0.447596,
+              "mean": 0.373508
             },
             {
               "name": "vegetationRetention",
-              "min": 0.052584,
-              "max": 0.522495,
-              "mean": 0.357094
+              "min": 0.000694,
+              "max": 0.515747,
+              "mean": 0.355674
             }
           ]
         }
@@ -14989,7 +14989,7 @@
       "name": "alpine-ridge",
       "exportSchemaVersion": 1,
       "tileSchemaVersion": 1,
-      "generatorVersion": 1,
+      "generatorVersion": 2,
       "center": {
         "x": -224,
         "z": -192,
@@ -15024,7 +15024,7 @@
           "tileZ": -2,
           "originX": -512,
           "originZ": -512,
-          "fieldHash": "0x0ec7e9792ac72ea6",
+          "fieldHash": "0x5896fbf58ee4316f",
           "fields": [
             {
               "name": "height",
@@ -15052,45 +15052,45 @@
             },
             {
               "name": "thermalErosion",
-              "min": 0.045907,
-              "max": 0.30751,
-              "mean": 0.134102
+              "min": 0,
+              "max": 0,
+              "mean": 0
             },
             {
               "name": "hydraulicErosion",
-              "min": 0.05464,
-              "max": 0.162425,
-              "mean": 0.09247
+              "min": 0,
+              "max": 0.010558,
+              "mean": 0.001104
             },
             {
               "name": "deposition",
-              "min": 0.048281,
-              "max": 0.204178,
-              "mean": 0.107912
+              "min": 0,
+              "max": 0.014502,
+              "mean": 0.00041
             },
             {
               "name": "sedimentLoad",
-              "min": 0.076513,
-              "max": 0.260355,
-              "mean": 0.134768
+              "min": 0,
+              "max": 0.01407,
+              "mean": 0.001041
             },
             {
               "name": "bedrockExposure",
-              "min": 0.020434,
-              "max": 0.212567,
-              "mean": 0.076461
+              "min": 0,
+              "max": 0.040305,
+              "mean": 0.009172
             },
             {
               "name": "soilDepth",
-              "min": 0.350995,
-              "max": 0.576477,
-              "mean": 0.47209
+              "min": 0.333511,
+              "max": 0.471348,
+              "mean": 0.425888
             },
             {
               "name": "vegetationRetention",
-              "min": 0.251028,
-              "max": 0.568146,
-              "mean": 0.468568
+              "min": 0.287145,
+              "max": 0.550332,
+              "mean": 0.473796
             }
           ]
         },
@@ -15100,7 +15100,7 @@
           "tileZ": -2,
           "originX": -256,
           "originZ": -512,
-          "fieldHash": "0x2e1fa4f88e9f1cbb",
+          "fieldHash": "0x7f0a67c2edd35253",
           "fields": [
             {
               "name": "height",
@@ -15128,45 +15128,45 @@
             },
             {
               "name": "thermalErosion",
-              "min": 0.062103,
-              "max": 0.53864,
-              "mean": 0.204314
+              "min": 0,
+              "max": 0.33749,
+              "mean": 0.010838
             },
             {
               "name": "hydraulicErosion",
-              "min": 0.037644,
-              "max": 0.849216,
-              "mean": 0.101903
+              "min": 0,
+              "max": 0.018184,
+              "mean": 0.001792
             },
             {
               "name": "deposition",
-              "min": 0.025082,
-              "max": 0.783042,
-              "mean": 0.107627
+              "min": 0,
+              "max": 0.347277,
+              "mean": 0.011645
             },
             {
               "name": "sedimentLoad",
-              "min": 0.06854,
-              "max": 0.699976,
-              "mean": 0.168851
+              "min": 0,
+              "max": 0.021875,
+              "mean": 0.001477
             },
             {
               "name": "bedrockExposure",
-              "min": 0.031102,
-              "max": 0.383987,
-              "mean": 0.123469
+              "min": 0,
+              "max": 0.304084,
+              "mean": 0.022881
             },
             {
               "name": "soilDepth",
-              "min": 0.266054,
-              "max": 0.658922,
-              "mean": 0.415402
+              "min": 0.229302,
+              "max": 0.535253,
+              "mean": 0.383873
             },
             {
               "name": "vegetationRetention",
-              "min": 0,
-              "max": 0.535542,
-              "mean": 0.35841
+              "min": 0.000157,
+              "max": 0.538339,
+              "mean": 0.375514
             }
           ]
         },
@@ -15176,7 +15176,7 @@
           "tileZ": -2,
           "originX": 0,
           "originZ": -512,
-          "fieldHash": "0xb88ede4b99947cd8",
+          "fieldHash": "0x633ea50e1a0d18c3",
           "fields": [
             {
               "name": "height",
@@ -15204,45 +15204,45 @@
             },
             {
               "name": "thermalErosion",
-              "min": 0.057801,
-              "max": 0.532173,
-              "mean": 0.16252
+              "min": 0,
+              "max": 0.2894,
+              "mean": 0.002876
             },
             {
               "name": "hydraulicErosion",
-              "min": 0.053406,
-              "max": 0.846611,
-              "mean": 0.166621
+              "min": 0,
+              "max": 0.012552,
+              "mean": 0.001348
             },
             {
               "name": "deposition",
-              "min": 0.046856,
-              "max": 0.786565,
-              "mean": 0.184431
+              "min": 0,
+              "max": 0.2894,
+              "mean": 0.003349
             },
             {
               "name": "sedimentLoad",
-              "min": 0.096718,
-              "max": 0.699976,
-              "mean": 0.198147
+              "min": 0,
+              "max": 0.020506,
+              "mean": 0.001312
             },
             {
               "name": "bedrockExposure",
-              "min": 0.026072,
-              "max": 0.357235,
-              "mean": 0.096997
+              "min": 0,
+              "max": 0.293685,
+              "mean": 0.014089
             },
             {
               "name": "soilDepth",
-              "min": 0.297763,
-              "max": 0.675541,
-              "mean": 0.464455
+              "min": 0.226748,
+              "max": 0.459022,
+              "mean": 0.379325
             },
             {
               "name": "vegetationRetention",
               "min": 0,
-              "max": 0.545579,
-              "mean": 0.367206
+              "max": 0.527586,
+              "mean": 0.363969
             }
           ]
         },
@@ -15252,7 +15252,7 @@
           "tileZ": -1,
           "originX": -512,
           "originZ": -256,
-          "fieldHash": "0xc19b4a2e91200435",
+          "fieldHash": "0xb8b30864ed70363c",
           "fields": [
             {
               "name": "height",
@@ -15280,45 +15280,45 @@
             },
             {
               "name": "thermalErosion",
-              "min": 0.056257,
-              "max": 0.431736,
-              "mean": 0.172834
+              "min": 0,
+              "max": 0.02975,
+              "mean": 0.000154
             },
             {
               "name": "hydraulicErosion",
-              "min": 0.02703,
-              "max": 0.144461,
-              "mean": 0.076226
+              "min": 0,
+              "max": 0.015838,
+              "mean": 0.001679
             },
             {
               "name": "deposition",
-              "min": 0.024216,
-              "max": 0.183988,
-              "mean": 0.087704
+              "min": 0,
+              "max": 0.031576,
+              "mean": 0.000843
             },
             {
               "name": "sedimentLoad",
-              "min": 0.070555,
-              "max": 0.274994,
-              "mean": 0.137512
+              "min": 0,
+              "max": 0.025777,
+              "mean": 0.001486
             },
             {
               "name": "bedrockExposure",
-              "min": 0.025713,
-              "max": 0.311493,
-              "mean": 0.100503
+              "min": 0,
+              "max": 0.065964,
+              "mean": 0.012857
             },
             {
               "name": "soilDepth",
-              "min": 0.28491,
-              "max": 0.525267,
-              "mean": 0.420821
+              "min": 0.280706,
+              "max": 0.451566,
+              "mean": 0.391477
             },
             {
               "name": "vegetationRetention",
-              "min": 0.124158,
-              "max": 0.522858,
-              "mean": 0.388591
+              "min": 0.181368,
+              "max": 0.522229,
+              "mean": 0.403482
             }
           ]
         },
@@ -15328,7 +15328,7 @@
           "tileZ": -1,
           "originX": -256,
           "originZ": -256,
-          "fieldHash": "0x928eedf441a3b793",
+          "fieldHash": "0xd5e0f9de3c4edbcb",
           "fields": [
             {
               "name": "height",
@@ -15356,45 +15356,45 @@
             },
             {
               "name": "thermalErosion",
-              "min": 0.07023,
-              "max": 0.535014,
-              "mean": 0.175482
+              "min": 0,
+              "max": 0.071875,
+              "mean": 0.001049
             },
             {
               "name": "hydraulicErosion",
-              "min": 0.044309,
-              "max": 0.824139,
-              "mean": 0.155356
+              "min": 0,
+              "max": 0.013119,
+              "mean": 0.00145
             },
             {
               "name": "deposition",
-              "min": 0.039213,
-              "max": 0.783349,
-              "mean": 0.167939
+              "min": 0,
+              "max": 0.071875,
+              "mean": 0.001675
             },
             {
               "name": "sedimentLoad",
-              "min": 0.082362,
-              "max": 0.652658,
-              "mean": 0.196169
+              "min": 0,
+              "max": 0.024347,
+              "mean": 0.001234
             },
             {
               "name": "bedrockExposure",
-              "min": 0.029088,
-              "max": 0.355155,
-              "mean": 0.106716
+              "min": 0,
+              "max": 0.078431,
+              "mean": 0.014545
             },
             {
               "name": "soilDepth",
-              "min": 0.29111,
-              "max": 0.675768,
-              "mean": 0.454423
+              "min": 0.231818,
+              "max": 0.457147,
+              "mean": 0.380112
             },
             {
               "name": "vegetationRetention",
-              "min": 0.0529,
-              "max": 0.537873,
-              "mean": 0.366696
+              "min": 0.000129,
+              "max": 0.534834,
+              "mean": 0.368862
             }
           ]
         },
@@ -15404,7 +15404,7 @@
           "tileZ": -1,
           "originX": 0,
           "originZ": -256,
-          "fieldHash": "0x3497297e0309156e",
+          "fieldHash": "0x475e857b742684bb",
           "fields": [
             {
               "name": "height",
@@ -15432,45 +15432,45 @@
             },
             {
               "name": "thermalErosion",
-              "min": 0.051855,
-              "max": 0.535014,
-              "mean": 0.147469
+              "min": 0,
+              "max": 0.28933,
+              "mean": 0.002318
             },
             {
               "name": "hydraulicErosion",
-              "min": 0.058542,
-              "max": 0.843481,
-              "mean": 0.150139
+              "min": 0,
+              "max": 0.014821,
+              "mean": 0.001317
             },
             {
               "name": "deposition",
-              "min": 0.058747,
-              "max": 0.782221,
-              "mean": 0.171002
+              "min": 0,
+              "max": 0.28933,
+              "mean": 0.00279
             },
             {
               "name": "sedimentLoad",
-              "min": 0.085287,
-              "max": 0.694155,
-              "mean": 0.182105
+              "min": 0,
+              "max": 0.018706,
+              "mean": 0.001266
             },
             {
               "name": "bedrockExposure",
-              "min": 0.02285,
-              "max": 0.357235,
-              "mean": 0.087149
+              "min": 0,
+              "max": 0.293627,
+              "mean": 0.013056
             },
             {
               "name": "soilDepth",
-              "min": 0.299025,
-              "max": 0.670369,
-              "mean": 0.482355
+              "min": 0.230424,
+              "max": 0.468945,
+              "mean": 0.402575
             },
             {
               "name": "vegetationRetention",
               "min": 0,
-              "max": 0.553042,
-              "mean": 0.418519
+              "max": 0.547145,
+              "mean": 0.415219
             }
           ]
         },
@@ -15480,7 +15480,7 @@
           "tileZ": 0,
           "originX": -512,
           "originZ": 0,
-          "fieldHash": "0xd66fb4fe562ecd10",
+          "fieldHash": "0x556905e277ad66bb",
           "fields": [
             {
               "name": "height",
@@ -15508,45 +15508,45 @@
             },
             {
               "name": "thermalErosion",
-              "min": 0.062169,
-              "max": 0.307391,
-              "mean": 0.147425
+              "min": 0,
+              "max": 0.051974,
+              "mean": 0.00018
             },
             {
               "name": "hydraulicErosion",
-              "min": 0.039873,
-              "max": 0.135641,
-              "mean": 0.076632
+              "min": 0,
+              "max": 0.011885,
+              "mean": 0.001419
             },
             {
               "name": "deposition",
-              "min": 0.03222,
-              "max": 0.186919,
-              "mean": 0.088962
+              "min": 0,
+              "max": 0.051974,
+              "mean": 0.000607
             },
             {
               "name": "sedimentLoad",
-              "min": 0.071274,
-              "max": 0.215089,
-              "mean": 0.127127
+              "min": 0,
+              "max": 0.028322,
+              "mean": 0.001489
             },
             {
               "name": "bedrockExposure",
-              "min": 0.021952,
-              "max": 0.214509,
-              "mean": 0.08458
+              "min": 0,
+              "max": 0.062457,
+              "mean": 0.010459
             },
             {
               "name": "soilDepth",
-              "min": 0.346905,
-              "max": 0.549113,
-              "mean": 0.43842
+              "min": 0.334069,
+              "max": 0.463904,
+              "mean": 0.404964
             },
             {
               "name": "vegetationRetention",
-              "min": 0.25317,
-              "max": 0.541815,
-              "mean": 0.421402
+              "min": 0.289649,
+              "max": 0.534723,
+              "mean": 0.431795
             }
           ]
         },
@@ -15556,7 +15556,7 @@
           "tileZ": 0,
           "originX": -256,
           "originZ": 0,
-          "fieldHash": "0x1ba24d5f321e96d1",
+          "fieldHash": "0x7587e36226dff3f4",
           "fields": [
             {
               "name": "height",
@@ -15584,45 +15584,45 @@
             },
             {
               "name": "thermalErosion",
-              "min": 0.046854,
-              "max": 0.302213,
-              "mean": 0.141847
+              "min": 0,
+              "max": 0.016337,
+              "mean": 0.000057
             },
             {
               "name": "hydraulicErosion",
-              "min": 0.049845,
-              "max": 0.824603,
-              "mean": 0.107301
+              "min": 0,
+              "max": 0.015324,
+              "mean": 0.00114
             },
             {
               "name": "deposition",
-              "min": 0.044121,
-              "max": 0.78228,
-              "mean": 0.123816
+              "min": 0,
+              "max": 0.019014,
+              "mean": 0.000519
             },
             {
               "name": "sedimentLoad",
-              "min": 0.073728,
-              "max": 0.640332,
-              "mean": 0.14776
+              "min": 0,
+              "max": 0.0208,
+              "mean": 0.001017
             },
             {
               "name": "bedrockExposure",
-              "min": 0.016974,
-              "max": 0.204105,
-              "mean": 0.082117
+              "min": 0,
+              "max": 0.042433,
+              "mean": 0.010311
             },
             {
               "name": "soilDepth",
-              "min": 0.34631,
-              "max": 0.670306,
-              "mean": 0.449044
+              "min": 0.237281,
+              "max": 0.460454,
+              "mean": 0.394766
             },
             {
               "name": "vegetationRetention",
-              "min": 0.077048,
-              "max": 0.553764,
-              "mean": 0.40201
+              "min": 0.000902,
+              "max": 0.543051,
+              "mean": 0.40567
             }
           ]
         },
@@ -15632,7 +15632,7 @@
           "tileZ": 0,
           "originX": 0,
           "originZ": 0,
-          "fieldHash": "0x393c6cafcdaad1a3",
+          "fieldHash": "0x56d5558fc81f0a2d",
           "fields": [
             {
               "name": "height",
@@ -15660,45 +15660,45 @@
             },
             {
               "name": "thermalErosion",
-              "min": 0.072046,
-              "max": 0.336237,
-              "mean": 0.154633
+              "min": 0,
+              "max": 0.012303,
+              "mean": 0.000043
             },
             {
               "name": "hydraulicErosion",
-              "min": 0.05044,
-              "max": 0.824603,
-              "mean": 0.182008
+              "min": 0,
+              "max": 0.010245,
+              "mean": 0.001428
             },
             {
               "name": "deposition",
-              "min": 0.050885,
-              "max": 0.782731,
-              "mean": 0.204566
+              "min": 0,
+              "max": 0.016699,
+              "mean": 0.000537
             },
             {
               "name": "sedimentLoad",
-              "min": 0.083465,
-              "max": 0.640332,
-              "mean": 0.205702
+              "min": 0,
+              "max": 0.017552,
+              "mean": 0.0014
             },
             {
               "name": "bedrockExposure",
-              "min": 0.032952,
-              "max": 0.229079,
-              "mean": 0.09074
+              "min": 0,
+              "max": 0.044633,
+              "mean": 0.011384
             },
             {
               "name": "soilDepth",
-              "min": 0.353155,
-              "max": 0.673913,
-              "mean": 0.470168
+              "min": 0.233839,
+              "max": 0.458863,
+              "mean": 0.370877
             },
             {
               "name": "vegetationRetention",
-              "min": 0.071014,
-              "max": 0.550059,
-              "mean": 0.354457
+              "min": 0,
+              "max": 0.532951,
+              "mean": 0.346195
             }
           ]
         }

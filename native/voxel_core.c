@@ -37,11 +37,24 @@
 #define WORLDGEN_TILE_FIELD_COUNT 32
 #define WORLDGEN_TILE_SIZE 256.0f
 #define EROSION_TILE_SCHEMA_VERSION 1
-#define EROSION_TILE_GENERATOR_VERSION 1
+#define EROSION_TILE_GENERATOR_VERSION 2
 #define EROSION_TILE_RESOLUTION 17
 #define EROSION_TILE_SAMPLE_COUNT (EROSION_TILE_RESOLUTION * EROSION_TILE_RESOLUTION)
 #define EROSION_TILE_FIELD_COUNT 11
 #define EROSION_TILE_SIZE 256.0f
+#define EROSION_SIM_RESOLUTION EROSION_TILE_RESOLUTION
+#define EROSION_SIM_CELLS (EROSION_SIM_RESOLUTION * EROSION_SIM_RESOLUTION)
+#define EROSION_SIM_HYDRAULIC_ITERATIONS 12
+#define EROSION_SIM_THERMAL_ITERATIONS 6
+#define EROSION_SIM_RAIN_RATE 0.06f
+#define EROSION_SIM_EVAPORATION 0.04f
+#define EROSION_SIM_CAPACITY_K 0.40f
+#define EROSION_SIM_EROSION_K 0.25f
+#define EROSION_SIM_DEPOSITION_K 0.35f
+#define EROSION_SIM_TALUS_TAN 0.70f
+#define EROSION_SIM_THERMAL_K 0.18f
+#define EROSION_SIM_HEIGHT_LOSS_NORMALIZER 12.0f
+#define EROSION_SIM_SEDIMENT_NORMALIZER 8.0f
 #define MATERIAL_TILE_SCHEMA_VERSION 1
 #define MATERIAL_TILE_GENERATOR_VERSION 1
 #define MATERIAL_TILE_RESOLUTION 17
@@ -94,6 +107,16 @@ static unsigned char g_worldgen_tile_biome_ids[WORLDGEN_TILE_SAMPLE_COUNT];
 static unsigned char g_worldgen_tile_water_ids[WORLDGEN_TILE_SAMPLE_COUNT];
 static unsigned short g_worldgen_tile_river_ids[WORLDGEN_TILE_SAMPLE_COUNT];
 static float g_erosion_tile_fields[EROSION_TILE_SAMPLE_COUNT * EROSION_TILE_FIELD_COUNT];
+static float g_erosion_sim_height[EROSION_SIM_CELLS];
+static float g_erosion_sim_height_initial[EROSION_SIM_CELLS];
+static float g_erosion_sim_water[EROSION_SIM_CELLS];
+static float g_erosion_sim_sediment[EROSION_SIM_CELLS];
+static float g_erosion_sim_water_scratch[EROSION_SIM_CELLS];
+static float g_erosion_sim_sediment_scratch[EROSION_SIM_CELLS];
+static float g_erosion_sim_height_delta[EROSION_SIM_CELLS];
+static float g_erosion_sim_thermal_loss[EROSION_SIM_CELLS];
+static float g_erosion_sim_hydraulic_loss[EROSION_SIM_CELLS];
+static float g_erosion_sim_deposition[EROSION_SIM_CELLS];
 static float g_material_tile_fields[MATERIAL_TILE_SAMPLE_COUNT * MATERIAL_TILE_FIELD_COUNT];
 static unsigned char g_material_tile_ids[MATERIAL_TILE_SAMPLE_COUNT];
 static float g_cave_graph_passages[CAVE_GRAPH_MAX_PASSAGES * CAVE_GRAPH_PASSAGE_FIELD_COUNT];
@@ -735,26 +758,186 @@ static float erosion_tile_stream_power(float x, float z, float h, float ny, floa
     return clampf(drainage * 0.42f + wetness * 0.18f + moisture * 0.12f + slope * 0.22f + river_influence * 0.06f, 0.0f, 1.0f);
 }
 
+static void initialize_erosion_simulation(float origin_x, float origin_z) {
+    float stride = EROSION_TILE_SIZE / (float)(EROSION_SIM_RESOLUTION - 1);
+    for (int iz = 0; iz < EROSION_SIM_RESOLUTION; ++iz) {
+        for (int ix = 0; ix < EROSION_SIM_RESOLUTION; ++ix) {
+            int idx = iz * EROSION_SIM_RESOLUTION + ix;
+            float wx = origin_x + (float)ix * stride;
+            float wz = origin_z + (float)iz * stride;
+            float h = terrain_height(wx, wz);
+            g_erosion_sim_height[idx] = h;
+            g_erosion_sim_height_initial[idx] = h;
+            g_erosion_sim_water[idx] = 0.0f;
+            g_erosion_sim_sediment[idx] = 0.0f;
+            g_erosion_sim_thermal_loss[idx] = 0.0f;
+            g_erosion_sim_hydraulic_loss[idx] = 0.0f;
+            g_erosion_sim_deposition[idx] = 0.0f;
+        }
+    }
+}
+
+static float erosion_sim_max_local_drop(int x, int z) {
+    int N = EROSION_SIM_RESOLUTION;
+    int idx = z * N + x;
+    float here = g_erosion_sim_height[idx];
+    float max_drop = 0.0f;
+    int neighbor_dx[4] = {-1, 1, 0, 0};
+    int neighbor_dz[4] = {0, 0, -1, 1};
+    for (int n = 0; n < 4; ++n) {
+        int nx = x + neighbor_dx[n];
+        int nz = z + neighbor_dz[n];
+        if (nx < 0 || nx >= N || nz < 0 || nz >= N) continue;
+        float drop = here - g_erosion_sim_height[nz * N + nx];
+        if (drop > max_drop) max_drop = drop;
+    }
+    return max_drop;
+}
+
+static void run_hydraulic_iteration(void) {
+    int N = EROSION_SIM_RESOLUTION;
+    float cell_size = EROSION_TILE_SIZE / (float)(N - 1);
+    int neighbor_dx[4] = {-1, 1, 0, 0};
+    int neighbor_dz[4] = {0, 0, -1, 1};
+
+    for (int i = 0; i < EROSION_SIM_CELLS; ++i) g_erosion_sim_water[i] += EROSION_SIM_RAIN_RATE;
+
+    for (int i = 0; i < EROSION_SIM_CELLS; ++i) {
+        g_erosion_sim_water_scratch[i] = g_erosion_sim_water[i];
+        g_erosion_sim_sediment_scratch[i] = g_erosion_sim_sediment[i];
+    }
+
+    for (int z = 0; z < N; ++z) {
+        for (int x = 0; x < N; ++x) {
+            int idx = z * N + x;
+            float here_level = g_erosion_sim_height[idx] + g_erosion_sim_water[idx];
+            int best_dx = 0;
+            int best_dz = 0;
+            float best_drop = 0.0f;
+            for (int n = 0; n < 4; ++n) {
+                int nx = x + neighbor_dx[n];
+                int nz = z + neighbor_dz[n];
+                if (nx < 0 || nx >= N || nz < 0 || nz >= N) continue;
+                int nidx = nz * N + nx;
+                float drop = here_level - (g_erosion_sim_height[nidx] + g_erosion_sim_water[nidx]);
+                if (drop > best_drop) {
+                    best_drop = drop;
+                    best_dx = neighbor_dx[n];
+                    best_dz = neighbor_dz[n];
+                }
+            }
+            if (best_drop > 0.0001f && g_erosion_sim_water[idx] > 0.0001f) {
+                float transfer = best_drop * 0.5f;
+                if (transfer > g_erosion_sim_water[idx]) transfer = g_erosion_sim_water[idx];
+                int nidx = (z + best_dz) * N + (x + best_dx);
+                g_erosion_sim_water_scratch[idx] -= transfer;
+                g_erosion_sim_water_scratch[nidx] += transfer;
+                float sed_transfer = g_erosion_sim_sediment[idx] * (transfer / g_erosion_sim_water[idx]);
+                g_erosion_sim_sediment_scratch[idx] -= sed_transfer;
+                g_erosion_sim_sediment_scratch[nidx] += sed_transfer;
+            }
+        }
+    }
+
+    for (int i = 0; i < EROSION_SIM_CELLS; ++i) {
+        g_erosion_sim_water[i] = g_erosion_sim_water_scratch[i];
+        g_erosion_sim_sediment[i] = g_erosion_sim_sediment_scratch[i];
+    }
+
+    for (int z = 0; z < N; ++z) {
+        for (int x = 0; x < N; ++x) {
+            int idx = z * N + x;
+            float max_drop = erosion_sim_max_local_drop(x, z);
+            float slope = max_drop / cell_size;
+            float capacity = g_erosion_sim_water[idx] * slope * EROSION_SIM_CAPACITY_K;
+            if (g_erosion_sim_sediment[idx] > capacity) {
+                float delta = (g_erosion_sim_sediment[idx] - capacity) * EROSION_SIM_DEPOSITION_K;
+                g_erosion_sim_sediment[idx] -= delta;
+                g_erosion_sim_height[idx] += delta;
+                g_erosion_sim_deposition[idx] += delta;
+            } else {
+                float delta = (capacity - g_erosion_sim_sediment[idx]) * EROSION_SIM_EROSION_K;
+                g_erosion_sim_sediment[idx] += delta;
+                g_erosion_sim_height[idx] -= delta;
+                g_erosion_sim_hydraulic_loss[idx] += delta;
+            }
+        }
+    }
+
+    for (int i = 0; i < EROSION_SIM_CELLS; ++i) {
+        g_erosion_sim_water[i] *= (1.0f - EROSION_SIM_EVAPORATION);
+        if (g_erosion_sim_water[i] < 0.001f) {
+            float deposit = g_erosion_sim_sediment[i];
+            g_erosion_sim_height[i] += deposit;
+            g_erosion_sim_deposition[i] += deposit;
+            g_erosion_sim_sediment[i] = 0.0f;
+            g_erosion_sim_water[i] = 0.0f;
+        }
+    }
+}
+
+static void run_thermal_iteration(void) {
+    int N = EROSION_SIM_RESOLUTION;
+    float cell_size = EROSION_TILE_SIZE / (float)(N - 1);
+    float talus_height = cell_size * EROSION_SIM_TALUS_TAN;
+    int neighbor_dx[4] = {-1, 1, 0, 0};
+    int neighbor_dz[4] = {0, 0, -1, 1};
+
+    for (int i = 0; i < EROSION_SIM_CELLS; ++i) g_erosion_sim_height_delta[i] = 0.0f;
+
+    for (int z = 0; z < N; ++z) {
+        for (int x = 0; x < N; ++x) {
+            int idx = z * N + x;
+            for (int n = 0; n < 4; ++n) {
+                int nx = x + neighbor_dx[n];
+                int nz = z + neighbor_dz[n];
+                if (nx < 0 || nx >= N || nz < 0 || nz >= N) continue;
+                int nidx = nz * N + nx;
+                float drop = g_erosion_sim_height[idx] - g_erosion_sim_height[nidx];
+                if (drop > talus_height) {
+                    float delta = (drop - talus_height) * EROSION_SIM_THERMAL_K;
+                    g_erosion_sim_height_delta[idx] -= delta;
+                    g_erosion_sim_height_delta[nidx] += delta;
+                    g_erosion_sim_thermal_loss[idx] += delta;
+                    g_erosion_sim_deposition[nidx] += delta;
+                }
+            }
+        }
+    }
+
+    for (int i = 0; i < EROSION_SIM_CELLS; ++i) g_erosion_sim_height[i] += g_erosion_sim_height_delta[i];
+}
+
+static void run_erosion_simulation(float origin_x, float origin_z) {
+    initialize_erosion_simulation(origin_x, origin_z);
+    for (int iter = 0; iter < EROSION_SIM_HYDRAULIC_ITERATIONS; ++iter) run_hydraulic_iteration();
+    for (int iter = 0; iter < EROSION_SIM_THERMAL_ITERATIONS; ++iter) run_thermal_iteration();
+}
+
 static void write_erosion_tile_sample(int ix, int iz, float origin_x, float origin_z) {
     float stride = EROSION_TILE_SIZE / (float)(EROSION_TILE_RESOLUTION - 1);
     float x = origin_x + (float)ix * stride;
     float z = origin_z + (float)iz * stride;
-    float h = terrain_height(x, z);
+    int sim_idx = iz * EROSION_SIM_RESOLUTION + ix;
+    float h = g_erosion_sim_height_initial[sim_idx];
     float ny = terrain_normal_y(x, z);
     float slope = clampf(1.0f - ny, 0.0f, 1.0f);
     float drainage = drainage_mask_from_height(x, z, h);
     float wetness = wetness_mask_from_fields(x, h, z, ny, h, drainage);
     float heuristic_erosion = erosion_mask_from_height(x, z, h, ny);
-    float relief = erosion_tile_local_relief(x, z, h);
     float vegetation = vegetation_mask_from_fields(x, z, h, ny, drainage, heuristic_erosion);
     float stream_power = erosion_tile_stream_power(x, z, h, ny, drainage, wetness);
-    float thermal_erosion = clampf(slope * 0.62f + relief * 0.30f + heuristic_erosion * 0.18f, 0.0f, 1.0f);
-    float hydraulic_erosion = clampf(stream_power * 0.58f + drainage * wetness * 0.34f + relief * drainage * 0.16f, 0.0f, 1.0f);
-    float sediment_load = clampf(thermal_erosion * 0.42f + hydraulic_erosion * 0.50f + stream_power * 0.22f, 0.0f, 1.0f);
-    float deposition = clampf((1.0f - slope) * drainage * 0.42f + wetness * 0.30f + (1.0f - stream_power) * sediment_load * 0.36f, 0.0f, 1.0f);
-    float bedrock_exposure = clampf(thermal_erosion * 0.48f + hydraulic_erosion * 0.34f + slope * 0.28f - deposition * 0.30f, 0.0f, 1.0f);
+    float thermal_loss = g_erosion_sim_thermal_loss[sim_idx];
+    float hydraulic_loss = g_erosion_sim_hydraulic_loss[sim_idx];
+    float deposition_total = g_erosion_sim_deposition[sim_idx];
+    float sediment_remaining = g_erosion_sim_sediment[sim_idx];
+    float thermal_erosion = clampf(thermal_loss / EROSION_SIM_HEIGHT_LOSS_NORMALIZER, 0.0f, 1.0f);
+    float hydraulic_erosion = clampf(hydraulic_loss / EROSION_SIM_HEIGHT_LOSS_NORMALIZER, 0.0f, 1.0f);
+    float deposition = clampf(deposition_total / EROSION_SIM_HEIGHT_LOSS_NORMALIZER, 0.0f, 1.0f);
+    float sediment_load = clampf(sediment_remaining / EROSION_SIM_SEDIMENT_NORMALIZER, 0.0f, 1.0f);
+    float bedrock_exposure = clampf((thermal_loss + hydraulic_loss) / (EROSION_SIM_HEIGHT_LOSS_NORMALIZER * 1.2f) - deposition * 0.30f + slope * 0.18f, 0.0f, 1.0f);
     float soil_depth = clampf(deposition * 0.58f + vegetation * 0.30f + (1.0f - bedrock_exposure) * 0.24f, 0.0f, 1.0f);
-    float vegetation_retention = clampf(vegetation * 0.54f + soil_depth * 0.36f - stream_power * 0.16f - thermal_erosion * 0.12f, 0.0f, 1.0f);
+    float vegetation_retention = clampf(vegetation * 0.54f + soil_depth * 0.36f - stream_power * 0.12f - thermal_erosion * 0.16f - hydraulic_erosion * 0.08f, 0.0f, 1.0f);
     int sample = ix + EROSION_TILE_RESOLUTION * iz;
     int base = sample * EROSION_TILE_FIELD_COUNT;
     g_erosion_tile_fields[base + 0] = h;
@@ -773,6 +956,7 @@ static void write_erosion_tile_sample(int ix, int iz, float origin_x, float orig
 int generate_erosion_tile(int tile_x, int tile_z) {
     float origin_x = (float)tile_x * EROSION_TILE_SIZE;
     float origin_z = (float)tile_z * EROSION_TILE_SIZE;
+    run_erosion_simulation(origin_x, origin_z);
     for (int iz = 0; iz < EROSION_TILE_RESOLUTION; ++iz) {
         for (int ix = 0; ix < EROSION_TILE_RESOLUTION; ++ix) {
             write_erosion_tile_sample(ix, iz, origin_x, origin_z);
