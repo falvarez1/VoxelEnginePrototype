@@ -147,6 +147,10 @@ const DEPTH_PYRAMID_FORMAT: GPUTextureFormat = 'r32float';
 const SHADOW_MAP_SIZE = 2048;
 const SHADOW_ORTHO_HALF = 420;
 const SHADOW_ORTHO_DEPTH = 1400;
+// Push the shadow box center ahead of the eye so the fixed-size ortho frustum
+// spends resolution on the viewed region instead of behind the camera. Kept
+// well under SHADOW_ORTHO_HALF so near-camera terrain stays inside the box.
+const SHADOW_LOOKAHEAD = 240;
 const LOD_SEAM_NEG_X = 1 << 0;
 const LOD_SEAM_POS_X = 1 << 1;
 const LOD_SEAM_NEG_Z = 1 << 2;
@@ -3439,13 +3443,28 @@ export class Renderer {
     const sd = this.settings.sunDirection ?? DEFAULT_RENDERER_SETTINGS.sunDirection;
     const len = Math.hypot(sd[0], sd[1], sd[2]) || 1;
     const lx = sd[0] / len, ly = sd[1] / len, lz = sd[2] / len;
-    const cx = camera.position[0], cy = camera.position[1], cz = camera.position[2];
+    const fwd = camera.forward();
+    const cx = camera.position[0] + fwd[0] * SHADOW_LOOKAHEAD;
+    const cy = camera.position[1] + fwd[1] * SHADOW_LOOKAHEAD;
+    const cz = camera.position[2] + fwd[2] * SHADOW_LOOKAHEAD;
     const center = new Float32Array([cx, cy, cz]);
     const eye = new Float32Array([cx + lx * SHADOW_ORTHO_DEPTH, cy + ly * SHADOW_ORTHO_DEPTH, cz + lz * SHADOW_ORTHO_DEPTH]);
     const up = Math.abs(ly) > 0.95 ? new Float32Array([0, 0, 1]) : new Float32Array([0, 1, 0]);
     const view = mat4LookAt(eye, center, up);
     const proj = mat4Ortho(-SHADOW_ORTHO_HALF, SHADOW_ORTHO_HALF, -SHADOW_ORTHO_HALF, SHADOW_ORTHO_HALF, 1, SHADOW_ORTHO_DEPTH * 2);
-    this.lightViewProj = mat4Multiply(proj, view);
+    const lvp = mat4Multiply(proj, view);
+    // Texel-snap so the shadow texel grid stays fixed in world space while the
+    // box translates with the camera. The sun direction is constant, so the box
+    // never rotates and snapping translation alone removes edge shimmer. The
+    // world origin projects to (lvp[12], lvp[13]) in NDC (ortho => w=1); round
+    // it to the nearest texel and fold the sub-texel correction back into the
+    // clip-space translation.
+    const half = SHADOW_MAP_SIZE / 2;
+    const texX = lvp[12] * half;
+    const texY = lvp[13] * half;
+    lvp[12] += (Math.round(texX) - texX) / half;
+    lvp[13] += (Math.round(texY) - texY) / half;
+    this.lightViewProj = lvp;
     const data = new Float32Array(16 + 4);
     data.set(this.lightViewProj, 0);
     data[16] = this.settings.shadowsEnabled ? 1 : 0;
