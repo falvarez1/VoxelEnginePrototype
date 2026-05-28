@@ -2093,13 +2093,19 @@ fn fs_main(input: VertexOut) -> @location(0) vec4<f32> {
   // Depth tint: edge is 0 at the deep channel center and rises toward shallow
   // banks / lake rims, so deep water reads dark teal-blue and shallow lighter.
   let shallow = clamp(input.edge, 0.0, 1.0);
-  let deepColor = vec3<f32>(0.011, 0.057, 0.086);
-  let shallowColor = vec3<f32>(0.052, 0.166, 0.182);
+  // Richer alpine depth gradient: a saturated deep teal-blue channel grading to
+  // a brighter turquoise at the shallows so the water reads with depth instead
+  // of one flat muted blue. Static (depth from the per-vertex edge), so no
+  // shimmer.
+  let deepColor = vec3<f32>(0.010, 0.064, 0.104);
+  let shallowColor = vec3<f32>(0.070, 0.205, 0.224);
   var color = mix(deepColor, shallowColor, shallow * 0.82);
+  // Looking straight down reads as deeper water; grazing reads brighter/skyward.
+  color = mix(color, deepColor * 0.86, ndv * 0.30);
 
-  // Grazing angles pick up sky/horizon color through fresnel.
-  let skyTint = mix(vec3<f32>(0.090, 0.205, 0.285), vec3<f32>(0.430, 0.560, 0.680), sun);
-  color = mix(color, skyTint, fresnel * 0.62);
+  // Grazing angles pick up sky/horizon color through fresnel (alpine sheen).
+  let skyTint = mix(vec3<f32>(0.105, 0.235, 0.320), vec3<f32>(0.455, 0.585, 0.715), sun);
+  color = mix(color, skyTint, fresnel * 0.66);
 
   // Sun glint off the gentle wave normal, clamped and kept modest so calm
   // water does not sparkle unnaturally.
