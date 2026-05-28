@@ -1424,6 +1424,18 @@ fn material_color(m: vec4<f32>, world: vec3<f32>, n: vec3<f32>) -> vec3<f32> {
     snow = mix(snow, vec3<f32>(0.82, 0.94, 1.08), ice * 0.18);
     snow = mix(snow, vec3<f32>(0.56, 0.58, 0.56), exposed * 0.30);
     snow = snow + d.fine * vec3<f32>(0.020, 0.024, 0.030);
+    // Fine sun-gated sparkle: sparse glints that only show under strong direct
+    // sun on snow facing the light. Distance-faded to zero by ~560m so the
+    // high-frequency pattern can't alias/shimmer on distant peaks.
+    let sparkleSun = normalize(scene.sun.xyz);
+    let sparkleField = fast_noise2(world.xz * 3.6 + vec2<f32>(world.y * 0.40, -world.y * 0.25));
+    let sparkleNear = 1.0 - smoothstep(160.0, 560.0, distance(scene.camera.xyz, world));
+    let sparkle = smoothstep(0.82, 0.97, sparkleField)
+      * max(sparkleSun.y, 0.0)
+      * max(dot(n, sparkleSun), 0.0)
+      * (1.0 - exposed)
+      * sparkleNear;
+    snow = snow + vec3<f32>(0.65, 0.70, 0.82) * sparkle * 0.5;
     return snow;
   }
 
