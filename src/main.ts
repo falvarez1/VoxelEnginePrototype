@@ -1050,6 +1050,7 @@ function applyQualityPreset(settings: EngineSettings, capabilities?: RuntimeCapa
     next.cinematicLighting = true;
     next.waterOpacity = 0.84;
     next.vegetationEnabled = false;
+    next.shadowsEnabled = false;
     next.qualityPreset = requestedPreset;
     return next;
   }
@@ -1063,6 +1064,7 @@ function applyQualityPreset(settings: EngineSettings, capabilities?: RuntimeCapa
     next.cinematicLighting = true;
     next.waterOpacity = 0.91;
     next.vegetationEnabled = true;
+    next.shadowsEnabled = true;
     next.qualityPreset = requestedPreset;
     return next;
   }
@@ -1076,6 +1078,7 @@ function applyQualityPreset(settings: EngineSettings, capabilities?: RuntimeCapa
     next.cinematicLighting = true;
     next.waterOpacity = 0.92;
     next.vegetationEnabled = true;
+    next.shadowsEnabled = true;
     next.qualityPreset = requestedPreset;
     return next;
   }
@@ -1088,6 +1091,7 @@ function applyQualityPreset(settings: EngineSettings, capabilities?: RuntimeCapa
   next.cinematicLighting = DEFAULT_ENGINE_SETTINGS.cinematicLighting;
   next.waterOpacity = DEFAULT_ENGINE_SETTINGS.waterOpacity;
   next.vegetationEnabled = true;
+  next.shadowsEnabled = false;
   next.qualityPreset = requestedPreset;
   return next;
 }
@@ -1116,6 +1120,7 @@ function autoQualitySettingsForLevel(settings: EngineSettings, level: number): E
     next.cinematicLighting = true;
     next.waterOpacity = 0.86;
     next.vegetationEnabled = false;
+    next.shadowsEnabled = false;
     next.farTerrainEnabled = true;
     return next;
   }
@@ -1129,6 +1134,7 @@ function autoQualitySettingsForLevel(settings: EngineSettings, level: number): E
     next.cinematicLighting = true;
     next.waterOpacity = 0.93;
     next.vegetationEnabled = true;
+    next.shadowsEnabled = true;
     next.farTerrainEnabled = true;
     return next;
   }
@@ -1142,6 +1148,7 @@ function autoQualitySettingsForLevel(settings: EngineSettings, level: number): E
     next.cinematicLighting = true;
     next.waterOpacity = 0.94;
     next.vegetationEnabled = true;
+    next.shadowsEnabled = true;
     next.farTerrainEnabled = true;
     return next;
   }
@@ -1154,6 +1161,7 @@ function autoQualitySettingsForLevel(settings: EngineSettings, level: number): E
   next.cinematicLighting = true;
   next.waterOpacity = DEFAULT_ENGINE_SETTINGS.waterOpacity;
   next.vegetationEnabled = true;
+  next.shadowsEnabled = false;
   next.farTerrainEnabled = true;
   return next;
 }
