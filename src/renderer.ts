@@ -1430,8 +1430,15 @@ fn material_color(m: vec4<f32>, world: vec3<f32>, n: vec3<f32>) -> vec3<f32> {
   if (id == 3) {
     let moisture = max(wetness, smoothstep(-0.55, 0.45, d.large));
     let gravel = d.fleck;
-    var dirt = mix(vec3<f32>(0.155, 0.145, 0.095), vec3<f32>(0.070, 0.090, 0.078), moisture * 0.52);
-    dirt = mix(dirt, vec3<f32>(0.300, 0.270, 0.185), gravel * 0.12);
+    // Dry dirt -> warm wet mud as moisture rises. The wet endpoint is a warmer
+    // brown (plan "wet mud" target) so riverbanks read as mud rather than moss.
+    var dirt = mix(vec3<f32>(0.182, 0.150, 0.094), vec3<f32>(0.110, 0.086, 0.058), moisture * 0.58);
+    dirt = mix(dirt, vec3<f32>(0.330, 0.290, 0.200), gravel * 0.14);
+    // Pale sand/soil transition right at the waterline (very wet, low slope).
+    let shoreline = smoothstep(0.62, 0.98, wetness) * smoothstep(0.30, 0.85, slope);
+    dirt = mix(dirt, vec3<f32>(0.300, 0.272, 0.205), shoreline * 0.30);
+    // Dark undercut on steep banks.
+    dirt = mix(dirt, dirt * 0.62, smoothstep(0.45, 0.92, steep) * 0.6);
     dirt = dirt + d.fine * vec3<f32>(0.012, 0.014, 0.010);
     return dirt;
   }
