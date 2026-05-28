@@ -2385,6 +2385,9 @@ export class Renderer {
   vegetationBatchCapacityBytes = 0;
   vegetationBatchBytes = 0;
   vegetationBatchScratch = new Float32Array(0);
+  shadowVegetationBatchBuffer: GPUBuffer | null = null;
+  shadowVegetationBatchCapacityBytes = 0;
+  shadowVegetationBatchScratch = new Float32Array(0);
   beaconVertexBuffer!: GPUBuffer;
   beaconVertexCount = 0;
   chunks = new Map<string, RenderableChunk>();
@@ -3089,6 +3092,60 @@ export class Renderer {
     return { buffer, instanceCount: totalInstances, lodCulledInstances: 0 };
   }
 
+  // True if the patch's bounding sphere may intersect the directional shadow
+  // ortho box. Tested in light clip space (ortho => w = 1) with a per-axis
+  // margin of radius / half-extent so a patch straddling the box edge is kept.
+  // Used to gather shadow casters by the light frustum instead of the camera
+  // frustum, so trees just off-screen still cast shadows into view.
+  private patchInLightBox(bounds: SphereBounds): boolean {
+    const lvp = this.lightViewProj;
+    const x = bounds.center[0], y = bounds.center[1], z = bounds.center[2];
+    const ndcX = lvp[0] * x + lvp[4] * y + lvp[8] * z + lvp[12];
+    const ndcY = lvp[1] * x + lvp[5] * y + lvp[9] * z + lvp[13];
+    const ndcZ = lvp[2] * x + lvp[6] * y + lvp[10] * z + lvp[14];
+    const m = bounds.radius / SHADOW_ORTHO_HALF;
+    return ndcX >= -1 - m && ndcX <= 1 + m
+      && ndcY >= -1 - m && ndcY <= 1 + m
+      && ndcZ >= -m && ndcZ <= 1 + m;
+  }
+
+  private ensureShadowVegetationBatchCapacity(byteLength: number): GPUBuffer {
+    const requiredBytes = roundUp4(Math.max(4, byteLength));
+    if (this.shadowVegetationBatchBuffer && this.shadowVegetationBatchCapacityBytes >= requiredBytes) return this.shadowVegetationBatchBuffer;
+    this.destroyBuffer(this.shadowVegetationBatchBuffer);
+    this.shadowVegetationBatchBuffer = this.device.createBuffer({
+      label: 'shadow vegetation batch',
+      size: requiredBytes,
+      usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST,
+    });
+    this.shadowVegetationBatchCapacityBytes = requiredBytes;
+    return this.shadowVegetationBatchBuffer;
+  }
+
+  // Pack all near vegetation patches inside the light box into one instance
+  // buffer for the shadow caster pass. Unlike updateVegetationBatch this is not
+  // camera-frustum culled, so off-screen casters are included; the far scenic
+  // forest layer is excluded (it lives outside this.vegetation).
+  private updateShadowVegetationBatch(patches: VegetationPatch[]): { buffer: GPUBuffer | null; instanceCount: number } {
+    let totalInstances = 0;
+    for (const patch of patches) totalInstances += patch.instanceCount;
+    const floats = totalInstances * VEGETATION_INSTANCE_FLOATS;
+    if (floats <= 0) return { buffer: null, instanceCount: 0 };
+    if (this.shadowVegetationBatchScratch.length < floats) {
+      this.shadowVegetationBatchScratch = new Float32Array(floats);
+    }
+    let offset = 0;
+    for (const patch of patches) {
+      const usable = patch.instanceCount * VEGETATION_INSTANCE_FLOATS;
+      this.shadowVegetationBatchScratch.set(patch.instances.subarray(0, usable), offset);
+      offset += usable;
+    }
+    const batch = this.shadowVegetationBatchScratch.subarray(0, floats);
+    const buffer = this.ensureShadowVegetationBatchCapacity(batch.byteLength);
+    this.device.queue.writeBuffer(buffer, 0, batch);
+    return { buffer, instanceCount: totalInstances };
+  }
+
   setGameMarkers(instances: Float32Array): void {
     this.destroyBuffer(this.gameMarkers?.instanceBuffer);
     this.gameMarkers = null;
@@ -3639,6 +3696,18 @@ export class Renderer {
       this.vegetationBatchBytes = 0;
     }
 
+    let shadowVegetationBuffer: GPUBuffer | null = null;
+    let shadowVegetationInstances = 0;
+    if (this.settings.shadowsEnabled && this.settings.vegetationEnabled) {
+      const shadowPatches: VegetationPatch[] = [];
+      for (const patch of this.vegetation.values()) {
+        if (this.patchInLightBox(patch.bounds)) shadowPatches.push(patch);
+      }
+      const shadowBatch = this.updateShadowVegetationBatch(shadowPatches);
+      shadowVegetationBuffer = shadowBatch.buffer;
+      shadowVegetationInstances = shadowBatch.instanceCount;
+    }
+
     if (this.settings.shadowsEnabled) {
       const shadowPass = encoder.beginRenderPass({
         label: 'shadow caster pass',
@@ -3674,11 +3743,11 @@ export class Renderer {
           }
         }
       }
-      if (this.settings.vegetationEnabled && vegetationBatchBuffer && vegetationInstances > 0) {
+      if (this.settings.vegetationEnabled && shadowVegetationBuffer && shadowVegetationInstances > 0) {
         shadowPass.setPipeline(this.shadowVegetationCasterPipeline);
         shadowPass.setVertexBuffer(0, this.treeVertexBuffer);
-        shadowPass.setVertexBuffer(1, vegetationBatchBuffer);
-        shadowPass.draw(this.treeVertexCount, vegetationInstances);
+        shadowPass.setVertexBuffer(1, shadowVegetationBuffer);
+        shadowPass.draw(this.treeVertexCount, shadowVegetationInstances);
       }
       shadowPass.end();
     }
