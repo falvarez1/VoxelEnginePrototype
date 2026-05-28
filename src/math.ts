@@ -54,6 +54,19 @@ export function mat4LookAt(eye: Vec3, center: Vec3, up: Vec3): Mat4 {
   return out;
 }
 
+export function mat4Ortho(left: number, right: number, bottom: number, top: number, near: number, far: number): Mat4 {
+  // WebGPU clip space: z in [0, 1], right-handed view looking down -z.
+  const out = new Float32Array(16);
+  out[0] = 2 / (right - left);
+  out[5] = 2 / (top - bottom);
+  out[10] = -1 / (far - near);
+  out[12] = -(right + left) / (right - left);
+  out[13] = -(top + bottom) / (top - bottom);
+  out[14] = -near / (far - near);
+  out[15] = 1;
+  return out;
+}
+
 export function mat4Multiply(a: Mat4, b: Mat4): Mat4 {
   const out = new Float32Array(16);
   for (let c = 0; c < 4; c++) {

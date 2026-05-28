@@ -463,6 +463,7 @@ export function registerEngineConsoleCommands(console: EngineConsole, deps: Cons
     ['vegetation', 'vegetationEnabled'],
     ['sky', 'skyEnabled'],
     ['cinematic', 'cinematicLighting'],
+    ['shadows', 'shadowsEnabled'],
     ['markers', 'gameMarkersEnabled'],
     ['preview', 'brushPreviewEnabled'],
     ['follow', 'densitySliceFollowCamera'],

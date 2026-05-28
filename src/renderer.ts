@@ -17,6 +17,7 @@ import type {
   TerrainPackFrame,
 } from './engine_contracts';
 import type { FlyCamera, Mat4, Vec3 } from './math.ts';
+import { mat4Identity, mat4LookAt, mat4Multiply, mat4Ortho } from './math.ts';
 
 function roundUp4(n: number): number { return (n + 3) & ~3; }
 
@@ -42,6 +43,7 @@ const DEFAULT_RENDERER_SETTINGS: RendererSettings = {
   atmosphereStrength: 1.10,
   skyEnabled: true,
   cinematicLighting: true,
+  shadowsEnabled: false,
   debugView: 0,
   waterOpacity: 0.93,
   animationSpeed: 1,
@@ -142,6 +144,9 @@ const UPLOAD_RING_PAGE_BYTES = 8 * 1024 * 1024;
 const UPLOAD_RING_MAX_PAGES = 8;
 const DEPTH_FORMAT: GPUTextureFormat = 'depth32float';
 const DEPTH_PYRAMID_FORMAT: GPUTextureFormat = 'r32float';
+const SHADOW_MAP_SIZE = 2048;
+const SHADOW_ORTHO_HALF = 420;
+const SHADOW_ORTHO_DEPTH = 1400;
 const LOD_SEAM_NEG_X = 1 << 0;
 const LOD_SEAM_POS_X = 1 << 1;
 const LOD_SEAM_NEG_Z = 1 << 2;
@@ -1241,6 +1246,36 @@ struct Scene {
 };
 @group(0) @binding(0) var<uniform> scene: Scene;
 
+struct ShadowData {
+  lightViewProj: mat4x4<f32>,
+  params: vec4<f32>,
+};
+@group(1) @binding(0) var<uniform> shadow: ShadowData;
+@group(1) @binding(1) var shadowDepth: texture_depth_2d;
+@group(1) @binding(2) var shadowSampler: sampler_comparison;
+
+fn sample_sun_shadow(world: vec3<f32>, n: vec3<f32>) -> f32 {
+  if (shadow.params.x < 0.5) { return 1.0; }
+  let lightClip = shadow.lightViewProj * vec4<f32>(world, 1.0);
+  if (lightClip.w <= 0.0) { return 1.0; }
+  let ndc = lightClip.xyz / lightClip.w;
+  if (ndc.x < -1.0 || ndc.x > 1.0 || ndc.y < -1.0 || ndc.y > 1.0 || ndc.z > 1.0) { return 1.0; }
+  let uv = vec2<f32>(ndc.x * 0.5 + 0.5, ndc.y * -0.5 + 0.5);
+  let sunDir = normalize(scene.sun.xyz);
+  let slope = clamp(1.0 - max(dot(n, sunDir), 0.0), 0.0, 1.0);
+  let bias = shadow.params.z * (1.0 + slope * 4.0);
+  let compareDepth = ndc.z - bias;
+  let texel = shadow.params.y;
+  var sum = 0.0;
+  for (var oy = -1; oy <= 1; oy = oy + 1) {
+    for (var ox = -1; ox <= 1; ox = ox + 1) {
+      let offset = vec2<f32>(f32(ox), f32(oy)) * texel;
+      sum = sum + textureSampleCompareLevel(shadowDepth, shadowSampler, uv + offset, compareDepth);
+    }
+  }
+  return sum / 9.0;
+}
+
 struct VertexIn {
   @location(0) localPosition: vec4<f32>,
   @location(1) normalAo: vec4<f32>,
@@ -1450,9 +1485,10 @@ fn cinematic_light(color: vec3<f32>, n: vec3<f32>, world: vec3<f32>, ao: f32) ->
   let shadowCast = smoothstep(-0.18, 0.76, fbm2(world.xz * 0.010 + vec2<f32>(sunDir.x, sunDir.z) * world.y * 0.060 + vec2<f32>(31.0, -17.0)));
   let grazingShadow = mix(0.055, 1.18, max(hollow * 0.64, shadowCast * 0.92)) * mix(0.22, 1.0, direct * 0.70 + saturate(n.y) * 0.30);
   let sunWash = warmSun * lowSun * (0.06 + pow(saturate(dot(normalize(world - scene.camera.xyz), sunDir)) * 0.5 + 0.5, 2.7) * 0.17);
-  var lit = color * (skyAmbient * 0.20 + warmSun * shadowShape * landformShade * grazingShadow + groundBounce + rim + sunWash);
+  let sunShadow = sample_sun_shadow(world, n);
+  var lit = color * (skyAmbient * 0.20 + warmSun * shadowShape * landformShade * grazingShadow * sunShadow + groundBounce + rim + sunWash);
   let goldenSlope = smoothstep(0.08, 0.86, direct + saturate(n.y) * 0.18) * lowSun;
-  lit = lit + color * warmSun * goldenSlope * 0.20;
+  lit = lit + color * warmSun * goldenSlope * 0.20 * sunShadow;
   let broadTerrainShadow = smoothstep(-0.34, 0.50, fbm2(world.xz * 0.0036 + vec2<f32>(world.y * 0.010, -world.y * 0.006) + vec2<f32>(-19.0, 31.0)));
   let longShadow = mix(0.28, 1.18, broadTerrainShadow) * mix(0.72, 1.0, direct * 0.58 + saturate(n.y) * 0.42);
   lit = lit * mix(1.0, longShadow, lowSun * 0.92);
@@ -1551,7 +1587,7 @@ fn fs_main(input: VertexOut) -> @location(0) vec4<f32> {
     color = tone_map(color);
   } else {
     let sunDir = normalize(scene.sun.xyz);
-    let diffuse = max(dot(n, sunDir), 0.0);
+    let diffuse = max(dot(n, sunDir), 0.0) * sample_sun_shadow(input.world, n);
     let sky = 0.35 + 0.30 * clamp(n.y, 0.0, 1.0);
     let rim = pow(1.0 - max(dot(n, normalize(scene.camera.xyz - input.world)), 0.0), 2.0) * 0.08;
     color *= (sky + diffuse * 0.95 + rim) * input.ao;
@@ -2151,6 +2187,25 @@ fn fs_main(input: VertexOut) -> @location(0) vec4<f32> {
 }
 `;
 
+const SHADOW_CASTER_SHADER = /* wgsl */`
+struct ShadowCast {
+  lightViewProj: mat4x4<f32>,
+  params: vec4<f32>,
+};
+@group(0) @binding(0) var<uniform> shadow: ShadowCast;
+
+struct VertexIn {
+  @location(0) localPosition: vec4<f32>,
+  @location(3) originScale: vec4<f32>,
+};
+
+@vertex
+fn vs_main(input: VertexIn) -> @builtin(position) vec4<f32> {
+  let world = input.originScale.xyz + input.localPosition.xyz * input.originScale.w;
+  return shadow.lightViewProj * vec4<f32>(world, 1.0);
+}
+`;
+
 function makeTreeMesh() {
   const verts = [];
   const add = (p: number[], n: number[], part: number) => verts.push(p[0], p[1], p[2], n[0], n[1], n[2], part);
@@ -2251,6 +2306,15 @@ export class Renderer {
   vegetationPipeline!: GPURenderPipeline;
   beaconPipeline!: GPURenderPipeline;
   terrainArenaPipeline!: GPURenderPipeline;
+  shadowCasterPipeline!: GPURenderPipeline;
+  shadowCasterBindGroupLayout!: GPUBindGroupLayout;
+  shadowSampleBindGroupLayout!: GPUBindGroupLayout;
+  shadowUniformBuffer!: GPUBuffer;
+  shadowCasterBindGroup!: GPUBindGroup;
+  shadowSampleBindGroup!: GPUBindGroup;
+  shadowDepthTexture!: GPUTexture;
+  shadowDepthView!: GPUTextureView;
+  lightViewProj: Mat4 = mat4Identity();
   terrainArenaCullPipeline!: GPUComputePipeline;
   terrainArenaCullBindGroupLayout!: GPUBindGroupLayout;
   clusterCullPipeline!: GPUComputePipeline;
@@ -2380,6 +2444,58 @@ export class Renderer {
       entries: [{ binding: 0, resource: { buffer: this.uniformBuffer } }],
     });
     const pipelineLayout = this.device.createPipelineLayout({ bindGroupLayouts: [bindGroupLayout] });
+
+    // Shadow map resources (Phase 8). The shadow uniform holds the light
+    // view-projection plus packed params (x=enabled, y=texelSize, z=bias).
+    this.shadowUniformBuffer = this.device.createBuffer({
+      label: 'shadow uniforms',
+      size: 16 * 4 + 4 * 4,
+      usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+    });
+    this.shadowDepthTexture = this.device.createTexture({
+      label: 'sun shadow depth',
+      size: { width: SHADOW_MAP_SIZE, height: SHADOW_MAP_SIZE },
+      format: DEPTH_FORMAT,
+      usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING,
+    });
+    this.shadowDepthView = this.shadowDepthTexture.createView();
+    const shadowSampler = this.device.createSampler({
+      label: 'shadow comparison sampler',
+      compare: 'less',
+      magFilter: 'linear',
+      minFilter: 'linear',
+    });
+    this.shadowCasterBindGroupLayout = this.device.createBindGroupLayout({
+      label: 'shadow caster bind group layout',
+      entries: [{ binding: 0, visibility: GPUShaderStage.VERTEX, buffer: { type: 'uniform' } }],
+    });
+    this.shadowSampleBindGroupLayout = this.device.createBindGroupLayout({
+      label: 'shadow sample bind group layout',
+      entries: [
+        { binding: 0, visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT, buffer: { type: 'uniform' } },
+        { binding: 1, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'depth' } },
+        { binding: 2, visibility: GPUShaderStage.FRAGMENT, sampler: { type: 'comparison' } },
+      ],
+    });
+    this.shadowCasterBindGroup = this.device.createBindGroup({
+      layout: this.shadowCasterBindGroupLayout,
+      entries: [{ binding: 0, resource: { buffer: this.shadowUniformBuffer } }],
+    });
+    this.shadowSampleBindGroup = this.device.createBindGroup({
+      layout: this.shadowSampleBindGroupLayout,
+      entries: [
+        { binding: 0, resource: { buffer: this.shadowUniformBuffer } },
+        { binding: 1, resource: this.shadowDepthView },
+        { binding: 2, resource: shadowSampler },
+      ],
+    });
+    const terrainPipelineLayout = this.device.createPipelineLayout({
+      bindGroupLayouts: [bindGroupLayout, this.shadowSampleBindGroupLayout],
+    });
+    const shadowCasterPipelineLayout = this.device.createPipelineLayout({
+      bindGroupLayouts: [this.shadowCasterBindGroupLayout],
+    });
+
     this.clusterCullBindGroupLayout = this.device.createBindGroupLayout({
       label: 'cluster cull bind group layout',
       entries: [
@@ -2487,7 +2603,7 @@ export class Renderer {
 
     this.terrainPipeline = this.device.createRenderPipeline({
       label: 'terrain pipeline',
-      layout: pipelineLayout,
+      layout: terrainPipelineLayout,
       vertex: { module: terrainModule, entryPoint: 'vs_main', buffers: [terrainVertexLayout, terrainOriginLayout] },
       fragment: { module: terrainModule, entryPoint: 'fs_main', targets: [{ format: this.format }] },
       primitive: { topology: 'triangle-list', cullMode: 'none' },
@@ -2496,11 +2612,27 @@ export class Renderer {
 
     this.terrainArenaPipeline = this.device.createRenderPipeline({
       label: 'terrain arena pipeline',
-      layout: pipelineLayout,
+      layout: terrainPipelineLayout,
       vertex: { module: terrainModule, entryPoint: 'vs_main', buffers: [terrainVertexLayout, terrainArenaOriginLayout] },
       fragment: { module: terrainModule, entryPoint: 'fs_main', targets: [{ format: this.format }] },
       primitive: { topology: 'triangle-list', cullMode: 'none' },
       depthStencil: { format: DEPTH_FORMAT, depthWriteEnabled: true, depthCompare: 'less' },
+    });
+
+    const shadowCasterModule = this.createShaderModuleChecked('shadow caster shader', SHADOW_CASTER_SHADER);
+    this.shadowCasterPipeline = this.device.createRenderPipeline({
+      label: 'shadow caster pipeline',
+      layout: shadowCasterPipelineLayout,
+      vertex: { module: shadowCasterModule, entryPoint: 'vs_main', buffers: [terrainVertexLayout, terrainArenaOriginLayout] },
+      primitive: { topology: 'triangle-list', cullMode: 'none' },
+      depthStencil: {
+        format: DEPTH_FORMAT,
+        depthWriteEnabled: true,
+        depthCompare: 'less',
+        depthBias: 2,
+        depthBiasSlopeScale: 3,
+        depthBiasClamp: 0,
+      },
     });
 
     this.clusterCullPipeline = this.device.createComputePipeline({
@@ -2634,6 +2766,7 @@ export class Renderer {
       atmosphereStrength: clamp(Number(nextSettings.atmosphereStrength ?? this.settings.atmosphereStrength), 0, 2.5),
       skyEnabled: nextSettings.skyEnabled ?? this.settings.skyEnabled,
       cinematicLighting: nextSettings.cinematicLighting ?? this.settings.cinematicLighting,
+      shadowsEnabled: nextSettings.shadowsEnabled ?? this.settings.shadowsEnabled,
       debugView: clamp(Number(nextSettings.debugView ?? this.settings.debugView), 0, DEBUG_VIEW_SNOW_MASK),
       waterOpacity: clamp(Number(nextSettings.waterOpacity ?? this.settings.waterOpacity), 0, 1),
       animationSpeed: clamp(Number(nextSettings.animationSpeed ?? this.settings.animationSpeed), 0, 4),
@@ -3220,6 +3353,26 @@ export class Renderer {
     this.device.queue.writeBuffer(this.uniformBuffer, 0, data);
   }
 
+  private writeShadowUniforms(camera: FlyCamera): void {
+    const sd = this.settings.sunDirection ?? DEFAULT_RENDERER_SETTINGS.sunDirection;
+    const len = Math.hypot(sd[0], sd[1], sd[2]) || 1;
+    const lx = sd[0] / len, ly = sd[1] / len, lz = sd[2] / len;
+    const cx = camera.position[0], cy = camera.position[1], cz = camera.position[2];
+    const center = new Float32Array([cx, cy, cz]);
+    const eye = new Float32Array([cx + lx * SHADOW_ORTHO_DEPTH, cy + ly * SHADOW_ORTHO_DEPTH, cz + lz * SHADOW_ORTHO_DEPTH]);
+    const up = Math.abs(ly) > 0.95 ? new Float32Array([0, 0, 1]) : new Float32Array([0, 1, 0]);
+    const view = mat4LookAt(eye, center, up);
+    const proj = mat4Ortho(-SHADOW_ORTHO_HALF, SHADOW_ORTHO_HALF, -SHADOW_ORTHO_HALF, SHADOW_ORTHO_HALF, 1, SHADOW_ORTHO_DEPTH * 2);
+    this.lightViewProj = mat4Multiply(proj, view);
+    const data = new Float32Array(16 + 4);
+    data.set(this.lightViewProj, 0);
+    data[16] = this.settings.shadowsEnabled ? 1 : 0;
+    data[17] = 1 / SHADOW_MAP_SIZE;
+    data[18] = 0.0016;
+    data[19] = 0;
+    this.device.queue.writeBuffer(this.shadowUniformBuffer, 0, data);
+  }
+
   private encodeDepthPyramid(encoder: GPUCommandEncoder, viewProj: Mat4): void {
     if (!this.depthPyramid) return;
     const width = this.canvas.width;
@@ -3296,6 +3449,7 @@ export class Renderer {
   render(camera: FlyCamera, viewProj: Mat4, timeSeconds: number): RendererStats {
     this.resize();
     this.writeUniforms(camera, viewProj, timeSeconds);
+    this.writeShadowUniforms(camera);
     if (this.settings.farTerrainEnabled) this.updateFarTerrain(camera.position, timeSeconds);
     if (this.settings.waterEnabled) this.updateWater(camera.position);
     this.uploadRing.flush();
@@ -3384,6 +3538,44 @@ export class Renderer {
       this.vegetationBatchBytes = 0;
     }
 
+    if (this.settings.shadowsEnabled) {
+      const shadowPass = encoder.beginRenderPass({
+        label: 'shadow caster pass',
+        colorAttachments: [],
+        depthStencilAttachment: {
+          view: this.shadowDepthView,
+          depthClearValue: 1,
+          depthLoadOp: 'clear',
+          depthStoreOp: 'store',
+        },
+      });
+      shadowPass.setBindGroup(0, this.shadowCasterBindGroup);
+      if (
+        terrainArenaActive
+        && terrainArenaReplaySlots > 0
+        && this.terrainArena.vertexBuffer
+        && this.terrainArena.originBuffer
+        && this.terrainArena.indexBuffer
+        && this.terrainArena.compactIndirectBuffer
+      ) {
+        shadowPass.setPipeline(this.shadowCasterPipeline);
+        shadowPass.setVertexBuffer(0, this.terrainArena.vertexBuffer);
+        shadowPass.setVertexBuffer(1, this.terrainArena.originBuffer);
+        shadowPass.setIndexBuffer(this.terrainArena.indexBuffer, 'uint32');
+        if (this.capabilities.multiDrawIndirect) {
+          const multiDrawPass = shadowPass as GPURenderPassEncoder & {
+            multiDrawIndexedIndirect: (buffer: GPUBuffer, offset: number, maxDrawCount: number) => void;
+          };
+          multiDrawPass.multiDrawIndexedIndirect(this.terrainArena.compactIndirectBuffer, 0, terrainArenaReplaySlots);
+        } else {
+          for (let drawSlot = 0; drawSlot < terrainArenaReplaySlots; drawSlot++) {
+            shadowPass.drawIndexedIndirect(this.terrainArena.compactIndirectBuffer, drawSlot * INDIRECT_INDEXED_ARGS_BYTES);
+          }
+        }
+      }
+      shadowPass.end();
+    }
+
     const colorView = this.context.getCurrentTexture().createView();
     if (!this.depthTexture) throw new Error('Depth texture is not initialized.');
     const depthView = this.depthTexture.createView();
@@ -3410,6 +3602,7 @@ export class Renderer {
       drawCalls++;
     }
     pass.setPipeline(this.terrainPipeline);
+    pass.setBindGroup(1, this.shadowSampleBindGroup);
     if (this.settings.farTerrainEnabled && this.farTerrain) {
       pass.setVertexBuffer(0, this.farTerrain.vertexBuffer);
       pass.setVertexBuffer(1, this.farTerrain.originBuffer);

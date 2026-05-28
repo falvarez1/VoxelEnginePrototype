@@ -268,6 +268,7 @@ export interface EngineSettings {
   atmosphereStrength: number;
   skyEnabled: boolean;
   cinematicLighting: boolean;
+  shadowsEnabled: boolean;
   debugView: number;
   waterOpacity: number;
   animationSpeed: number;
@@ -302,6 +303,7 @@ export interface RendererSettings {
   atmosphereStrength: number;
   skyEnabled: boolean;
   cinematicLighting: boolean;
+  shadowsEnabled: boolean;
   debugView: number;
   waterOpacity: number;
   animationSpeed: number;

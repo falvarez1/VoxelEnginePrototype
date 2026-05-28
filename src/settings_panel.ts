@@ -230,6 +230,7 @@ const GROUPS: SettingGroup[] = [
       { key: 'gameMarkersEnabled', label: 'Game markers', type: 'toggle' },
       { key: 'skyEnabled', label: 'Sky', type: 'toggle' },
       { key: 'cinematicLighting', label: 'Cinematic light', type: 'toggle' },
+      { key: 'shadowsEnabled', label: 'Sun shadows', type: 'toggle' },
       { key: 'exposure', label: 'Exposure', type: 'range', min: 0.55, max: 1.8, step: 0.05, suffix: 'x', precision: 2 },
       { key: 'atmosphereStrength', label: 'Atmosphere', type: 'range', min: 0, max: 2, step: 0.05, suffix: 'x', precision: 2 },
       { key: 'fogDensity', label: 'Fog density', type: 'range', min: 0, max: 2.2, step: 0.05, suffix: 'x', precision: 2 },
