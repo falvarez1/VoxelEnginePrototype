@@ -2022,18 +2022,57 @@ fn vs_main(input: VertexIn) -> VertexOut {
   out.clip = scene.viewProj * vec4<f32>(pos, 1.0);
   return out;
 }
+fn water_wave_normal(p: vec2<f32>, t: f32) -> vec3<f32> {
+  // Three world-space directional sine bands. World-space (not view-space)
+  // phase keeps the surface stable as the camera moves; amp*freq is kept small
+  // so the perturbed normal stays gentle for calm alpine water.
+  var slope = vec2<f32>(0.0, 0.0);
+  let dA = vec2<f32>(0.86, 0.50);
+  let phA = dot(p, dA) * 0.085 + t * 1.15;
+  slope = slope + dA * (0.55 * 0.085 * cos(phA));
+  let dB = vec2<f32>(-0.30, 0.95);
+  let phB = dot(p, dB) * 0.142 - t * 0.85;
+  slope = slope + dB * (0.32 * 0.142 * cos(phB));
+  let dC = vec2<f32>(0.65, -0.76);
+  let phC = dot(p, dC) * 0.265 + t * 1.6;
+  slope = slope + dC * (0.14 * 0.265 * cos(phC));
+  return normalize(vec3<f32>(-slope.x, 1.0, -slope.y));
+}
+
 @fragment
 fn fs_main(input: VertexOut) -> @location(0) vec4<f32> {
+  let t = scene.params.x;
   let sunDir = normalize(scene.sun.xyz);
   let sun = max(sunDir.y, 0.0);
   let viewDir = normalize(scene.camera.xyz - input.world);
-  let fresnel = pow(1.0 - max(dot(vec3<f32>(0.0, 1.0, 0.0), viewDir), 0.0), 3.0);
-  let shimmer = 0.016 * sin(input.world.x * 0.42 + input.world.z * 0.18 + scene.params.x * 1.6);
-  let glint = pow(max(dot(reflect(-sunDir, vec3<f32>(0.0, 1.0, 0.0)), viewDir), 0.0), 64.0) * 1.10;
-  var color = mix(vec3<f32>(0.010, 0.052, 0.078), vec3<f32>(0.050, 0.162, 0.218), fresnel * 0.64 + sun * 0.08);
-  color += vec3<f32>(2.10, 1.36, 0.56) * glint + shimmer * vec3<f32>(0.050, 0.180, 0.250);
-  let foam = smoothstep(0.72, 1.0, input.edge);
-  color = mix(color, vec3<f32>(0.74, 0.90, 0.86), foam * 0.12);
+  let n = water_wave_normal(input.world.xz, t);
+  let ndv = max(dot(n, viewDir), 0.0);
+  let fresnel = pow(1.0 - ndv, 5.0);
+
+  // Depth tint: edge is 0 at the deep channel center and rises toward shallow
+  // banks / lake rims, so deep water reads dark teal-blue and shallow lighter.
+  let shallow = clamp(input.edge, 0.0, 1.0);
+  let deepColor = vec3<f32>(0.011, 0.057, 0.086);
+  let shallowColor = vec3<f32>(0.052, 0.166, 0.182);
+  var color = mix(deepColor, shallowColor, shallow * 0.82);
+
+  // Grazing angles pick up sky/horizon color through fresnel.
+  let skyTint = mix(vec3<f32>(0.090, 0.205, 0.285), vec3<f32>(0.430, 0.560, 0.680), sun);
+  color = mix(color, skyTint, fresnel * 0.62);
+
+  // Sun glint off the perturbed normal, clamped so it tone-maps instead of blowing out.
+  let refl = reflect(-sunDir, n);
+  let glint = pow(max(dot(refl, viewDir), 0.0), 90.0) * (0.55 + sun * 0.85);
+  color = color + vec3<f32>(1.95, 1.36, 0.66) * min(glint, 3.0);
+
+  // Edge foam with downstream flow: streaks advect along world z over time.
+  let flow = input.world.z * 0.055 - t * 0.6;
+  let streak = sin(input.world.x * 0.50 + flow * 3.0) * 0.5 + 0.5;
+  let ripple = sin(input.world.x * 1.30 - flow * 5.0 + input.world.z * 0.20) * 0.5 + 0.5;
+  let foamNoise = clamp(streak * 0.62 + ripple * 0.48, 0.0, 1.0);
+  let foamMask = smoothstep(0.60, 1.0, shallow) * foamNoise;
+  color = mix(color, vec3<f32>(0.80, 0.91, 0.93), foamMask * 0.48);
+
   let d = distance(scene.camera.xyz, input.world);
   let fog = clamp(1.0 - exp(-max(d - 220.0, 0.0) * 0.00040 * scene.params.y * max(scene.visual.y, 0.0)), 0.0, 0.34);
   let sunSide = pow(clamp(dot(normalize(input.world - scene.camera.xyz), sunDir) * 0.5 + 0.5, 0.0, 1.0), 3.0);
