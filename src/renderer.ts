@@ -127,15 +127,20 @@ const TERRAIN_INDIRECT_REPLAY_STARTUP_SLOTS = 2048;
 const TERRAIN_INDIRECT_REPLAY_MIN_SLOTS = 512;
 const TERRAIN_INDIRECT_REPLAY_HEADROOM_SLOTS = 768;
 const TERRAIN_INDIRECT_REPLAY_VISIBLE_MULTIPLIER = 1.2;
-const TERRAIN_INDIRECT_REPLAY_STABLE_MAX_SLOTS = 4096;
-// Must match the stable cap. A lower moving cap drops visible terrain clusters
-// from the per-slot replay while the camera moves (Hi-Z occlusion is also off
-// during motion, so the visible set is at its largest), and because GPU
-// compaction assigns slots non-deterministically, a *different* subset draws
-// each frame -- read as terrain "flickering" only while moving. The stable cap
-// already sustains ~4100 draws at 60-70fps, so the lower moving cap bought no
-// real headroom and only caused the flicker.
-const TERRAIN_INDIRECT_REPLAY_MOVING_MAX_SLOTS = 4096;
+// The replay cap MUST exceed the worst-case visible cluster count, or the GPU
+// cull compaction (a non-deterministic atomicAdd that only writes slot <
+// counts.y) silently drops `visible - cap` clusters, and a *different* subset
+// lands past the cap each frame -> a different terrain region winks out every
+// frame, i.e. constant flicker (even stationary) at high cluster counts such as
+// LOD-rings-off + large radius (e.g. 5463 visible > the old 4096 cap). The
+// compact indirect buffer is already provisioned to >= TERRAIN_ARENA_MIN_CLUSTERS
+// (32768) slots, so raising the cap needs no buffer resize. The per-slot replay
+// fallback (when multiDrawIndirect is unavailable) issues one draw per replay
+// slot, and replaySlots is target-limited (visible*MULT + HEADROOM), so this
+// only adds draws when the visible set is genuinely large. Stable and moving
+// caps must stay equal (a lower moving cap re-introduces motion-only flicker).
+const TERRAIN_INDIRECT_REPLAY_STABLE_MAX_SLOTS = 8192;
+const TERRAIN_INDIRECT_REPLAY_MOVING_MAX_SLOTS = 8192;
 const TERRAIN_INDIRECT_REPLAY_CAMERA_MOVE_EPSILON = 0.025;
 const TERRAIN_INDIRECT_REPLAY_MOVING_SECONDS = 0.22;
 const VEGETATION_SHRUB_LOD_DISTANCE = 720;
