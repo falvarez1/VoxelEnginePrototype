@@ -117,4 +117,18 @@ export class FlyCamera {
     const proj = mat4Perspective(this.fovDegrees * Math.PI / 180, aspect, 0.1, 5000.0);
     return mat4Multiply(proj, view);
   }
+
+  // Camera-relative view-projection: the view is built with the eye at the
+  // origin (rotation only, no translation), so geometry must be transformed as
+  // (world - position). This keeps the large absolute world coordinates out of
+  // the f32 matrix multiply, eliminating the precision "jitter" that otherwise
+  // appears far from the origin when the camera moves. Uses the same proj as
+  // viewProjection(), so it stays consistent with the absolute matrix used for
+  // CPU-side frustum culling.
+  viewProjectionRelative(aspect: number): Mat4 {
+    const f = this.forward();
+    const view = mat4LookAt(vec3(0, 0, 0), f, vec3(0, 1, 0));
+    const proj = mat4Perspective(this.fovDegrees * Math.PI / 180, aspect, 0.1, 5000.0);
+    return mat4Multiply(proj, view);
+  }
 }

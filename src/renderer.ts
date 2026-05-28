@@ -1247,6 +1247,7 @@ struct Scene {
   sun: vec4<f32>,
   params: vec4<f32>,
   visual: vec4<f32>,
+  viewProjRel: mat4x4<f32>,
 };
 @group(0) @binding(0) var<uniform> scene: Scene;
 
@@ -1306,7 +1307,10 @@ fn vs_main(input: VertexIn) -> VertexOut {
     f32(input.material.w) / 255.0
   );
   out.ao = input.normalAo.w;
-  out.clip = scene.viewProj * vec4<f32>(out.world, 1.0);
+  // Camera-relative transform: subtract the camera before the matrix multiply so
+  // large absolute world coordinates never enter f32 clip math (no jitter when
+  // the camera moves). out.world stays absolute for world-locked material noise.
+  out.clip = scene.viewProjRel * vec4<f32>(out.world - scene.camera.xyz, 1.0);
   return out;
 }
 
@@ -1642,6 +1646,7 @@ struct Scene {
   sun: vec4<f32>,
   params: vec4<f32>,
   visual: vec4<f32>,
+  viewProjRel: mat4x4<f32>,
 };
 @group(0) @binding(0) var<uniform> scene: Scene;
 
@@ -2024,6 +2029,7 @@ struct Scene {
   sun: vec4<f32>,
   params: vec4<f32>,
   visual: vec4<f32>,
+  viewProjRel: mat4x4<f32>,
 };
 @group(0) @binding(0) var<uniform> scene: Scene;
 struct VertexIn {
@@ -2050,7 +2056,7 @@ fn vs_main(input: VertexIn) -> VertexOut {
   var out: VertexOut;
   out.world = pos;
   out.edge = input.ao;
-  out.clip = scene.viewProj * vec4<f32>(pos, 1.0);
+  out.clip = scene.viewProjRel * vec4<f32>(pos - scene.camera.xyz, 1.0);
   return out;
 }
 fn water_wave_normal(p: vec2<f32>, t: f32) -> vec3<f32> {
@@ -2118,6 +2124,7 @@ struct Scene {
   sun: vec4<f32>,
   params: vec4<f32>,
   visual: vec4<f32>,
+  viewProjRel: mat4x4<f32>,
 };
 @group(0) @binding(0) var<uniform> scene: Scene;
 
@@ -2139,7 +2146,7 @@ fn vs_main(input: VertexIn) -> VertexOut {
   let world = input.base + input.local * radius * pulse;
   let dirtyRegion = input.radius < 0.0;
   var out: VertexOut;
-  out.clip = scene.viewProj * vec4<f32>(world, 1.0);
+  out.clip = scene.viewProjRel * vec4<f32>(world - scene.camera.xyz, 1.0);
   let beaconColor = mix(vec3<f32>(0.08, 0.30, 0.34), vec3<f32>(0.38, 0.78, 0.68), input.shade);
   let dirtyColor = mix(vec3<f32>(0.95, 0.20, 0.05), vec3<f32>(1.0, 0.82, 0.18), input.shade);
   out.color = select(beaconColor, dirtyColor, dirtyRegion);
@@ -2159,6 +2166,7 @@ struct Scene {
   sun: vec4<f32>,
   params: vec4<f32>,
   visual: vec4<f32>,
+  viewProjRel: mat4x4<f32>,
 };
 @group(0) @binding(0) var<uniform> scene: Scene;
 
@@ -2229,7 +2237,7 @@ fn vs_main(input: VertexIn) -> VertexOut {
   out.kind = input.kind;
   out.tint = input.tint;
   out.seed = input.seed;
-  out.clip = scene.viewProj * vec4<f32>(world, 1.0);
+  out.clip = scene.viewProjRel * vec4<f32>(world - scene.camera.xyz, 1.0);
   return out;
 }
 @fragment
@@ -2555,7 +2563,8 @@ export class Renderer {
 
     this.uniformBuffer = this.device.createBuffer({
       label: 'scene uniforms',
-      size: 16 * 4 + 4 * 4 * 4,
+      // viewProj (mat4) + camera/sun/params/visual (4 vec4) + viewProjRel (mat4)
+      size: 16 * 4 + 4 * 4 * 4 + 16 * 4,
       usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
     });
     const bindGroupLayout = this.device.createBindGroupLayout({
@@ -3561,12 +3570,15 @@ export class Renderer {
       this.settings.skyEnabled ? 1 : 0,
       this.settings.cinematicLighting ? 1 : 0,
     ]);
-    const data = new Float32Array(16 + 4 + 4 + 4 + 4);
+    const aspect = this.canvas.width / Math.max(1, this.canvas.height);
+    const viewProjRel = camera.viewProjectionRelative(aspect);
+    const data = new Float32Array(16 + 4 + 4 + 4 + 4 + 16);
     data.set(viewProj, 0);
     data.set([camera.position[0], camera.position[1], camera.position[2], 1], 16);
     data.set(sun, 20);
     data.set(params, 24);
     data.set(visual, 28);
+    data.set(viewProjRel, 32);
     this.device.queue.writeBuffer(this.uniformBuffer, 0, data);
   }
 
