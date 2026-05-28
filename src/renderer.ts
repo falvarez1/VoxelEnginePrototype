@@ -1128,9 +1128,13 @@ function scenicTerrainMaterial(x: number, visualY: number, z: number, normalY: n
     + valueNoise2(x * 0.0035 + 11.0, z * 0.0035 - 19.0) * 50
     + smoothStep(0, 980, riverDistance) * 34;
   if (visualY > snowLine && normalY > 0.18) return 2.0;
+  // Wider grey rock shoulder just below the snow line plus rockier high ridges,
+  // so distant peaks read with the classic alpine green -> rock -> snow banding
+  // instead of an abrupt tan->white edge. Far terrain only (near terrain uses
+  // the WASM material), so the green valley floor is unaffected.
   const exposedRock = normalY < 0.13
-    || (visualY > snowLine - 32 && normalY < 0.44)
-    || (visualY > 238 && ridge2(x * 0.006, z * 0.006) > 0.78);
+    || (visualY > snowLine - 58 && normalY < 0.52)
+    || (visualY > 206 && ridge2(x * 0.006, z * 0.006) > 0.72);
   if (exposedRock) return 1.0;
   return 0.0;
 }
