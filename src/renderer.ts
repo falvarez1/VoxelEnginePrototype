@@ -2041,7 +2041,12 @@ struct VertexOut {
 fn vs_main(input: VertexIn) -> VertexOut {
   var pos = input.position;
   let t = scene.params.x;
-  pos.y += sin(pos.x * 0.16 + t * 1.35) * 0.026 + sin(pos.z * 0.12 - t * 1.0) * 0.020;
+  // Pin the surface displacement to zero at the banks. input.ao carries the
+  // edge weight (0 at the deep channel center, rising to 1 at the shoreline),
+  // so centerWeight fades the bob out at the waterline and the edge no longer
+  // pokes above/below the static terrain each frame.
+  let centerWeight = 1.0 - clamp(input.ao, 0.0, 1.0);
+  pos.y += (sin(pos.x * 0.16 + t * 1.35) * 0.020 + sin(pos.z * 0.12 - t * 1.0) * 0.016) * centerWeight;
   var out: VertexOut;
   out.world = pos;
   out.edge = input.ao;
@@ -2049,19 +2054,16 @@ fn vs_main(input: VertexIn) -> VertexOut {
   return out;
 }
 fn water_wave_normal(p: vec2<f32>, t: f32) -> vec3<f32> {
-  // Three world-space directional sine bands. World-space (not view-space)
+  // Two gentle world-space directional sine bands. World-space (not view-space)
   // phase keeps the surface stable as the camera moves; amp*freq is kept small
-  // so the perturbed normal stays gentle for calm alpine water.
+  // so the perturbed normal stays calm and the water does not look choppy.
   var slope = vec2<f32>(0.0, 0.0);
   let dA = vec2<f32>(0.86, 0.50);
-  let phA = dot(p, dA) * 0.085 + t * 1.15;
-  slope = slope + dA * (0.55 * 0.085 * cos(phA));
+  let phA = dot(p, dA) * 0.075 + t * 1.05;
+  slope = slope + dA * (0.30 * 0.075 * cos(phA));
   let dB = vec2<f32>(-0.30, 0.95);
-  let phB = dot(p, dB) * 0.142 - t * 0.85;
-  slope = slope + dB * (0.32 * 0.142 * cos(phB));
-  let dC = vec2<f32>(0.65, -0.76);
-  let phC = dot(p, dC) * 0.265 + t * 1.6;
-  slope = slope + dC * (0.14 * 0.265 * cos(phC));
+  let phB = dot(p, dB) * 0.128 - t * 0.80;
+  slope = slope + dB * (0.18 * 0.128 * cos(phB));
   return normalize(vec3<f32>(-slope.x, 1.0, -slope.y));
 }
 
@@ -2086,18 +2088,17 @@ fn fs_main(input: VertexOut) -> @location(0) vec4<f32> {
   let skyTint = mix(vec3<f32>(0.090, 0.205, 0.285), vec3<f32>(0.430, 0.560, 0.680), sun);
   color = mix(color, skyTint, fresnel * 0.62);
 
-  // Sun glint off the perturbed normal, clamped so it tone-maps instead of blowing out.
+  // Sun glint off the gentle wave normal, clamped and kept modest so calm
+  // water does not sparkle unnaturally.
   let refl = reflect(-sunDir, n);
-  let glint = pow(max(dot(refl, viewDir), 0.0), 90.0) * (0.55 + sun * 0.85);
-  color = color + vec3<f32>(1.95, 1.36, 0.66) * min(glint, 3.0);
+  let glint = pow(max(dot(refl, viewDir), 0.0), 80.0) * (0.35 + sun * 0.55);
+  color = color + vec3<f32>(1.55, 1.16, 0.66) * min(glint, 1.6);
 
-  // Edge foam with downstream flow: streaks advect along world z over time.
-  let flow = input.world.z * 0.055 - t * 0.6;
-  let streak = sin(input.world.x * 0.50 + flow * 3.0) * 0.5 + 0.5;
-  let ripple = sin(input.world.x * 1.30 - flow * 5.0 + input.world.z * 0.20) * 0.5 + 0.5;
-  let foamNoise = clamp(streak * 0.62 + ripple * 0.48, 0.0, 1.0);
-  let foamMask = smoothstep(0.60, 1.0, shallow) * foamNoise;
-  color = mix(color, vec3<f32>(0.80, 0.91, 0.93), foamMask * 0.48);
+  // Soft, static wet-bank tint right at the shoreline. No animation and no
+  // high-frequency pattern, so the waterline reads as a calm edge instead of
+  // the flickering, scrolling foam it had before.
+  let bank = smoothstep(0.82, 1.0, shallow);
+  color = mix(color, vec3<f32>(0.32, 0.44, 0.48), bank * 0.16);
 
   let d = distance(scene.camera.xyz, input.world);
   let fog = clamp(1.0 - exp(-max(d - 220.0, 0.0) * 0.00040 * scene.params.y * max(scene.visual.y, 0.0)), 0.0, 0.34);
