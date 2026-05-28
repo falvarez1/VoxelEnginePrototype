@@ -2206,6 +2206,46 @@ fn vs_main(input: VertexIn) -> @builtin(position) vec4<f32> {
 }
 `;
 
+const SHADOW_VEGETATION_CASTER_SHADER = /* wgsl */`
+struct ShadowCast {
+  lightViewProj: mat4x4<f32>,
+  params: vec4<f32>,
+};
+@group(0) @binding(0) var<uniform> shadow: ShadowCast;
+
+struct VertexIn {
+  @location(0) local: vec3<f32>,
+  @location(2) part: f32,
+  @location(3) base: vec3<f32>,
+  @location(4) scale: f32,
+  @location(5) kind: f32,
+  @location(8) aspect: f32,
+};
+
+@vertex
+fn vs_main(input: VertexIn) -> @builtin(position) vec4<f32> {
+  var visible = 0.0;
+  if (input.kind >= 1.5 && input.part >= 2.5) {
+    visible = 1.0;
+  } else if (input.kind < 0.5 && input.part >= 1.5 && input.part < 2.5) {
+    visible = 1.0;
+  } else if (input.kind >= 0.5 && input.kind < 1.5 && input.part < 1.5) {
+    visible = 1.0;
+  }
+  let aspect = clamp(input.aspect, 0.0, 1.0);
+  let rockSquash = select(1.0, 0.62 + aspect * 0.26, input.kind >= 1.5);
+  let crownWidthX = select(1.0, 0.86 + aspect * 0.28, input.kind >= 0.5 && input.kind < 1.5);
+  let crownWidthZ = select(1.0, 1.08 - aspect * 0.16, input.kind >= 0.5 && input.kind < 1.5);
+  let p = vec3<f32>(
+    input.local.x * input.scale * visible * crownWidthX,
+    input.local.y * input.scale * visible * rockSquash,
+    input.local.z * input.scale * visible * crownWidthZ
+  );
+  let world = input.base + p;
+  return shadow.lightViewProj * vec4<f32>(world, 1.0);
+}
+`;
+
 function makeTreeMesh() {
   const verts = [];
   const add = (p: number[], n: number[], part: number) => verts.push(p[0], p[1], p[2], n[0], n[1], n[2], part);
@@ -2307,6 +2347,7 @@ export class Renderer {
   beaconPipeline!: GPURenderPipeline;
   terrainArenaPipeline!: GPURenderPipeline;
   shadowCasterPipeline!: GPURenderPipeline;
+  shadowVegetationCasterPipeline!: GPURenderPipeline;
   shadowCasterBindGroupLayout!: GPUBindGroupLayout;
   shadowSampleBindGroupLayout!: GPUBindGroupLayout;
   shadowUniformBuffer!: GPUBuffer;
@@ -2624,6 +2665,47 @@ export class Renderer {
       label: 'shadow caster pipeline',
       layout: shadowCasterPipelineLayout,
       vertex: { module: shadowCasterModule, entryPoint: 'vs_main', buffers: [terrainVertexLayout, terrainArenaOriginLayout] },
+      primitive: { topology: 'triangle-list', cullMode: 'none' },
+      depthStencil: {
+        format: DEPTH_FORMAT,
+        depthWriteEnabled: true,
+        depthCompare: 'less',
+        depthBias: 2,
+        depthBiasSlopeScale: 3,
+        depthBiasClamp: 0,
+      },
+    });
+
+    const shadowVegetationCasterModule = this.createShaderModuleChecked('shadow vegetation caster shader', SHADOW_VEGETATION_CASTER_SHADER);
+    this.shadowVegetationCasterPipeline = this.device.createRenderPipeline({
+      label: 'shadow vegetation caster pipeline',
+      layout: shadowCasterPipelineLayout,
+      vertex: {
+        module: shadowVegetationCasterModule,
+        entryPoint: 'vs_main',
+        buffers: [
+          {
+            arrayStride: 7 * 4,
+            attributes: [
+              { shaderLocation: 0, offset: 0, format: 'float32x3' },
+              { shaderLocation: 1, offset: 3 * 4, format: 'float32x3' },
+              { shaderLocation: 2, offset: 6 * 4, format: 'float32' },
+            ],
+          },
+          {
+            arrayStride: 8 * 4,
+            stepMode: 'instance',
+            attributes: [
+              { shaderLocation: 3, offset: 0, format: 'float32x3' },
+              { shaderLocation: 4, offset: 3 * 4, format: 'float32' },
+              { shaderLocation: 5, offset: 4 * 4, format: 'float32' },
+              { shaderLocation: 6, offset: 5 * 4, format: 'float32' },
+              { shaderLocation: 7, offset: 6 * 4, format: 'float32' },
+              { shaderLocation: 8, offset: 7 * 4, format: 'float32' },
+            ],
+          },
+        ],
+      },
       primitive: { topology: 'triangle-list', cullMode: 'none' },
       depthStencil: {
         format: DEPTH_FORMAT,
@@ -3572,6 +3654,12 @@ export class Renderer {
             shadowPass.drawIndexedIndirect(this.terrainArena.compactIndirectBuffer, drawSlot * INDIRECT_INDEXED_ARGS_BYTES);
           }
         }
+      }
+      if (this.settings.vegetationEnabled && vegetationBatchBuffer && vegetationInstances > 0) {
+        shadowPass.setPipeline(this.shadowVegetationCasterPipeline);
+        shadowPass.setVertexBuffer(0, this.treeVertexBuffer);
+        shadowPass.setVertexBuffer(1, vegetationBatchBuffer);
+        shadowPass.draw(this.treeVertexCount, vegetationInstances);
       }
       shadowPass.end();
     }
