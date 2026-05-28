@@ -2290,7 +2290,10 @@ fn fs_main(input: VertexOut) -> @location(0) vec4<f32> {
   let selfShade = mix(0.26, 1.16, smoothstep(-0.2, 0.9, n.y + diffuse * 0.34));
   color *= (ambient + warmSun * (0.060 + diffuse * 1.92)) * selfShade;
   let d = distance(scene.camera.xyz, input.world);
-  let fog = clamp(1.0 - exp(-max(d - 460.0, 0.0) * 0.00030 * scene.params.y * max(scene.visual.y, 0.0)), 0.0, 0.24);
+  // Blend distant trees into the atmospheric haze instead of leaving a flat dark
+  // triangle wall (plan Phase 6 criterion). Starts sooner and reaches a higher
+  // ceiling than before; near trees (d < ~360) are still essentially un-fogged.
+  let fog = clamp(1.0 - exp(-max(d - 360.0, 0.0) * 0.00042 * scene.params.y * max(scene.visual.y, 0.0)), 0.0, 0.46);
   let sunSide = pow(clamp(dot(normalize(input.world - scene.camera.xyz), sunDir) * 0.5 + 0.5, 0.0, 1.0), 3.0);
   let lowSun = clamp(1.0 - sunDir.y * 1.35, 0.0, 1.0);
   let haze = mix(vec3<f32>(0.34, 0.46, 0.56), vec3<f32>(0.96, 0.62, 0.26), clamp(sunSide * 0.68 + lowSun * 0.08, 0.0, 1.0));
