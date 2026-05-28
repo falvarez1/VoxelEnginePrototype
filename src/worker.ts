@@ -230,6 +230,27 @@ function clamp01(value: number): number {
   return Math.max(0, Math.min(1, value));
 }
 
+// Smooth low-frequency forest-clump mask in [0,1], used to break the otherwise
+// uniform canopy into dense clumps and open clearings. Bilinear-interpolated
+// hash over a coarse (~88m) grid -- deterministic and world-locked (stable as
+// chunks stream), with no extra dependencies.
+function forestClump(x: number, z: number): number {
+  const cell = 88.0;
+  const gx = Math.floor(x / cell);
+  const gz = Math.floor(z / cell);
+  const fx = x / cell - gx;
+  const fz = z / cell - gz;
+  const sx = fx * fx * (3 - 2 * fx);
+  const sz = fz * fz * (3 - 2 * fz);
+  const c00 = rand01(gx, gz, 7741);
+  const c10 = rand01(gx + 1, gz, 7741);
+  const c01 = rand01(gx, gz + 1, 7741);
+  const c11 = rand01(gx + 1, gz + 1, 7741);
+  const top = c00 + (c10 - c00) * sx;
+  const bot = c01 + (c11 - c01) * sx;
+  return top + (bot - top) * sz;
+}
+
 function terrainNormalY(e: VoxelCoreExports, x: number, z: number): number {
   const step = 4.0;
   const hL = e.get_terrain_height(x - step, z);
@@ -278,7 +299,13 @@ function generateVegetation(cx: number, cy: number, cz: number): Float32Array {
 
     if (h < 7 || h > 82 || riverDistance < 34 || vegetationMask < 0.10 || normalY < 0.34) continue;
     const densityRoll = rand01(cx + i, cz - i, 123);
-    if (densityRoll > Math.min(0.58, vegetationMask * 0.86 + 0.04)) continue;
+    // Macro clumping: dense stands where the clump mask is high, near-open
+    // clearings where it is low (floor 0.12 keeps a few scattered trees, not a
+    // bare hole), instead of a uniform fill carpet.
+    const clump = forestClump(x, z);
+    const cf = clamp01((clump - 0.30) / 0.28);
+    const clumpFactor = 0.12 + 0.88 * cf * cf * (3.0 - 2.0 * cf);
+    if (densityRoll > Math.min(0.58, vegetationMask * 0.86 + 0.04) * clumpFactor) continue;
     const pineChance = Math.min(0.80, vegetationMask * 1.34 + 0.05);
     const type = vegetationMask > 0.30 && densityRoll < pineChance ? 1 : 0; // 0 grass/shrub, 1 pine
     const scaleBias = 0.82 + vegetationMask * 0.48;
