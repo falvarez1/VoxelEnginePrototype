@@ -128,7 +128,14 @@ const TERRAIN_INDIRECT_REPLAY_MIN_SLOTS = 512;
 const TERRAIN_INDIRECT_REPLAY_HEADROOM_SLOTS = 768;
 const TERRAIN_INDIRECT_REPLAY_VISIBLE_MULTIPLIER = 1.2;
 const TERRAIN_INDIRECT_REPLAY_STABLE_MAX_SLOTS = 4096;
-const TERRAIN_INDIRECT_REPLAY_MOVING_MAX_SLOTS = 2048;
+// Must match the stable cap. A lower moving cap drops visible terrain clusters
+// from the per-slot replay while the camera moves (Hi-Z occlusion is also off
+// during motion, so the visible set is at its largest), and because GPU
+// compaction assigns slots non-deterministically, a *different* subset draws
+// each frame -- read as terrain "flickering" only while moving. The stable cap
+// already sustains ~4100 draws at 60-70fps, so the lower moving cap bought no
+// real headroom and only caused the flicker.
+const TERRAIN_INDIRECT_REPLAY_MOVING_MAX_SLOTS = 4096;
 const TERRAIN_INDIRECT_REPLAY_CAMERA_MOVE_EPSILON = 0.025;
 const TERRAIN_INDIRECT_REPLAY_MOVING_SECONDS = 0.22;
 const VEGETATION_SHRUB_LOD_DISTANCE = 720;
