@@ -2249,7 +2249,15 @@ fn fs_main(input: VertexOut) -> @location(0) vec4<f32> {
   let diffuse = max(dot(n, sunDir), 0.0);
   let warmSun = mix(vec3<f32>(1.72, 0.78, 0.26), vec3<f32>(1.0, 0.84, 0.58), max(sunDir.y, 0.0));
   let variation = fract(input.world.x * 0.071 + input.world.z * 0.043 + input.kind * 0.37 + input.seed * 0.013);
-  var color = mix(vec3<f32>(0.003, 0.022, 0.010), vec3<f32>(0.074, 0.176, 0.040), variation);
+  // Per-tree warm/cool green so forests are not one flat monochrome green. The
+  // hue is keyed to the instance seed (world-locked, stable when moving), and
+  // within-tree variation darkens toward a deep green. Trunk/shrub/rock below
+  // override this, so it only colors pine canopy.
+  let pineHue = fract(input.seed * 0.0137 + input.kind * 0.11);
+  let coolGreen = vec3<f32>(0.026, 0.140, 0.058);
+  let warmGreen = vec3<f32>(0.100, 0.172, 0.040);
+  let perTree = mix(coolGreen, warmGreen, pineHue);
+  var color = mix(vec3<f32>(0.005, 0.028, 0.014), perTree, clamp(variation * 0.6 + 0.5, 0.0, 1.0));
   if (input.part < 0.5) {
     color = vec3<f32>(0.20, 0.116, 0.054);
   } else if (input.kind < 0.5) {
