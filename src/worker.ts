@@ -827,6 +827,7 @@ async function generateLodTransitionMesh(msg: GenerateLodTransitionMeshMessage):
     const empty: LodTransitionMeshMessage = {
       type: 'lodTransitionMesh',
       signature: msg.signature,
+      sourceKey: msg.sourceKey,
       version: msg.version,
       vertices: new Uint8Array(0),
       indices: new Uint32Array(0),
@@ -912,6 +913,7 @@ async function generateLodTransitionMesh(msg: GenerateLodTransitionMeshMessage):
   const message: LodTransitionMeshMessage = {
     type: 'lodTransitionMesh',
     signature: msg.signature,
+    sourceKey: msg.sourceKey,
     version: msg.version,
     vertices,
     indices,

@@ -75,6 +75,7 @@ export interface ChunkMessage extends ChunkKeyParts {
 export interface LodTransitionMeshMessage {
   type: 'lodTransitionMesh';
   signature: string;
+  sourceKey: string;
   version: number;
   vertices: Uint8Array;
   indices: Uint32Array;
@@ -220,6 +221,7 @@ export type WorkerInboundMessage =
   | {
       type: 'generateLodTransitionMesh';
       signature: string;
+      sourceKey: string;
       version: number;
       cellCount: number;
       missingSampleCells: number;

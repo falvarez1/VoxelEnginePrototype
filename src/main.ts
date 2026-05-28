@@ -132,7 +132,7 @@ type ChunkWorker = Worker & {
   currentErosionTileKey?: string;
   currentMaterialTileKey?: string;
   currentCaveGraphTileKey?: string;
-  currentLodTransitionMeshSignature?: string;
+  currentLodTransitionMesh?: { sourceKey: string; signature: string };
   scratchStats?: WorkerScratchStats;
   sharedGenerateQueue?: SharedGenerateQueue;
   sharedRemeshPage?: SharedRemeshPage;
@@ -591,7 +591,10 @@ const SHARED_GENERATE_RESULT_SLOT = 8;
 const SHARED_GENERATE_RESULT_GENERATION = 9;
 const SHARED_RESULT_ARENA_BYTES = 12 * 1024 * 1024;
 const SHARED_RESULT_SLOT_COUNT = 64;
-const LOD_TRANSITION_MESH_KEY = '__runtime_lod_transition_mesh__';
+const LOD_TRANSITION_MESH_PREFIX = '__runtime_lod_transition_mesh__:';
+function lodTransitionMeshKey(sourceKey: string): string {
+  return LOD_TRANSITION_MESH_PREFIX + sourceKey;
+}
 
 function chunkCoord(v: number): number { return Math.floor(v / CHUNK_WORLD_SIZE); }
 function clampInt(v: number, lo: number, hi: number): number { return Math.max(lo, Math.min(hi, v | 0)); }
@@ -2742,9 +2745,10 @@ class ChunkStreamer {
   lastRegionDiff: RegionDiffSummary | null = null;
   meshTimes: number[] = [];
   private debugEditMarkersDirty = true;
-  private runtimeTransitionMeshSignature = '';
-  private pendingNativeTransitionMeshSignature = '';
-  private runtimeNativeTransitionMeshSignature = '';
+  private transitionMeshSignatures = new Map<string, string>();
+  private transitionMeshNativeSignatures = new Map<string, string>();
+  private pendingNativeTransitions = new Map<string, string>();
+  private transitionMeshStats = new Map<string, { cells: number; emittedCells: number; triangles: number; missingSampleCells: number; degenerateCells: number }>();
 
   constructor(renderer: Renderer, overlay: HTMLElement) {
     this.renderer = renderer;
@@ -2854,12 +2858,13 @@ class ChunkStreamer {
   }
 
   private clearRuntimeLodTransitionMesh(): void {
-    if (this.runtimeTransitionMeshSignature) {
-      this.renderer.removeChunk(LOD_TRANSITION_MESH_KEY);
-      this.runtimeTransitionMeshSignature = '';
+    for (const sourceKey of this.transitionMeshSignatures.keys()) {
+      this.renderer.removeChunk(lodTransitionMeshKey(sourceKey));
     }
-    this.pendingNativeTransitionMeshSignature = '';
-    this.runtimeNativeTransitionMeshSignature = '';
+    this.transitionMeshSignatures.clear();
+    this.transitionMeshNativeSignatures.clear();
+    this.pendingNativeTransitions.clear();
+    this.transitionMeshStats.clear();
     this.lastStats.lodTransitionMeshCells = 0;
     this.lastStats.lodTransitionMeshEmittedCells = 0;
     this.lastStats.lodTransitionMeshTriangles = 0;
@@ -2868,8 +2873,8 @@ class ChunkStreamer {
     this.lastStats.lodTransitionMeshNative = false;
   }
 
-  private requestNativeRuntimeLodTransitionMesh(signature: string, cases: readonly TerrainLodTransitionCellCase[]): void {
-    if (this.pendingNativeTransitionMeshSignature === signature || this.runtimeNativeTransitionMeshSignature === signature) return;
+  private requestNativeRuntimeLodTransitionMesh(sourceKey: string, signature: string, cases: readonly TerrainLodTransitionCellCase[]): void {
+    if (this.pendingNativeTransitions.get(sourceKey) === signature || this.transitionMeshNativeSignatures.get(sourceKey) === signature) return;
     const worker = this.idle.pop();
     if (!worker) return;
     const payload = buildNativeLodTransitionMeshPayload(cases);
@@ -2877,11 +2882,12 @@ class ChunkStreamer {
       this.idle.push(worker);
       return;
     }
-    worker.currentLodTransitionMeshSignature = signature;
-    this.pendingNativeTransitionMeshSignature = signature;
+    worker.currentLodTransitionMesh = { sourceKey, signature };
+    this.pendingNativeTransitions.set(sourceKey, signature);
     worker.postMessage({
       type: 'generateLodTransitionMesh',
       signature,
+      sourceKey,
       version: this.version,
       cellCount: payload.cellCount,
       missingSampleCells: payload.missingSampleCells,
@@ -2932,48 +2938,103 @@ class ChunkStreamer {
     };
 
     const cases = buildTerrainLodTransitionCases(requests, provider);
-    const sampledSignature = [...sampledKeys.entries()]
-      .sort((a, b) => a[0].localeCompare(b[0]))
-      .map(([key, available]) => `${key}:${available ? 1 : 0}`)
-      .join('|');
-    const signature = `${this.version}:${this.editVersion}:${this.lastLodPlanSummary.transitionCells}:${sampledSignature}`;
-    if (signature === this.runtimeTransitionMeshSignature) {
-      this.requestNativeRuntimeLodTransitionMesh(signature, cases);
-      return;
+
+    // Group cases by the chunk that owns the coarse transition face. Each
+    // source chunk owns its own transition mesh, keyed by `sourceKey`, so it
+    // rebuilds only when its local neighborhood changes and evicts with the
+    // chunk (handled by the stale-source-key removal step below).
+    const groups = new Map<string, TerrainLodTransitionCellCase[]>();
+    for (const transitionCase of cases) {
+      let group = groups.get(transitionCase.sourceKey);
+      if (!group) {
+        group = [];
+        groups.set(transitionCase.sourceKey, group);
+      }
+      group.push(transitionCase);
     }
 
-    const mesh = buildTerrainLodTransitionMesh(cases);
-    this.runtimeTransitionMeshSignature = signature;
-    this.runtimeNativeTransitionMeshSignature = '';
-    this.lastStats.lodTransitionMeshCells = mesh.cellCount;
-    this.lastStats.lodTransitionMeshEmittedCells = mesh.emittedCells;
-    this.lastStats.lodTransitionMeshTriangles = mesh.indices.length / 3;
-    this.lastStats.lodTransitionMeshMissingSampleCells = mesh.missingSampleCells;
-    this.lastStats.lodTransitionMeshDegenerateCells = mesh.degenerateCells;
-    this.lastStats.lodTransitionMeshNative = false;
+    let anyNative = false;
 
-    const packed = buildPackedRuntimeLodTransitionMesh(mesh);
-    if (!packed) {
-      this.renderer.removeChunk(LOD_TRANSITION_MESH_KEY);
-      return;
+    for (const [sourceKey, group] of groups) {
+      const localSignature = `${this.version}:${this.editVersion}:` + group
+        .map(c => `${c.cellKey}:${c.combinedCase}:${c.missingSamples}:${c.samplesPresent}`)
+        .sort()
+        .join('|');
+
+      if (this.transitionMeshNativeSignatures.get(sourceKey) === localSignature) {
+        anyNative = true;
+      }
+
+      if (this.transitionMeshSignatures.get(sourceKey) === localSignature) {
+        this.requestNativeRuntimeLodTransitionMesh(sourceKey, localSignature, group);
+        continue;
+      }
+
+      const mesh = buildTerrainLodTransitionMesh(group);
+      this.transitionMeshSignatures.set(sourceKey, localSignature);
+      this.transitionMeshNativeSignatures.delete(sourceKey);
+      this.transitionMeshStats.set(sourceKey, {
+        cells: mesh.cellCount,
+        emittedCells: mesh.emittedCells,
+        triangles: mesh.indices.length / 3,
+        missingSampleCells: mesh.missingSampleCells,
+        degenerateCells: mesh.degenerateCells,
+      });
+
+      const packed = buildPackedRuntimeLodTransitionMesh(mesh);
+      if (!packed) {
+        this.renderer.removeChunk(lodTransitionMeshKey(sourceKey));
+      } else {
+        this.renderer.createChunkMesh(
+          lodTransitionMeshKey(sourceKey),
+          packed.vertices,
+          packed.indices,
+          packed.frame,
+          packed.bounds,
+          {
+            lod: 0,
+            lodSeamMask: 0,
+            lodTransitionMesh: true,
+            lodTransitionMeshCells: mesh.cellCount,
+            lodTransitionMeshEmittedCells: mesh.emittedCells,
+            lodTransitionMeshMissingSampleCells: mesh.missingSampleCells,
+            lodTransitionMeshDegenerateCells: mesh.degenerateCells,
+          },
+        );
+      }
+      this.requestNativeRuntimeLodTransitionMesh(sourceKey, localSignature, group);
     }
-    this.renderer.createChunkMesh(
-      LOD_TRANSITION_MESH_KEY,
-      packed.vertices,
-      packed.indices,
-      packed.frame,
-      packed.bounds,
-      {
-        lod: 0,
-        lodSeamMask: 0,
-        lodTransitionMesh: true,
-        lodTransitionMeshCells: mesh.cellCount,
-        lodTransitionMeshEmittedCells: mesh.emittedCells,
-        lodTransitionMeshMissingSampleCells: mesh.missingSampleCells,
-        lodTransitionMeshDegenerateCells: mesh.degenerateCells,
-      },
-    );
-    this.requestNativeRuntimeLodTransitionMesh(signature, cases);
+
+    // Remove transition meshes for source chunks that no longer have cases
+    // (the chunk evicted or its LOD boundary moved). This is the per-chunk
+    // eviction ownership: a chunk's seam geometry dies with the chunk.
+    for (const sourceKey of [...this.transitionMeshSignatures.keys()]) {
+      if (groups.has(sourceKey)) continue;
+      this.renderer.removeChunk(lodTransitionMeshKey(sourceKey));
+      this.transitionMeshSignatures.delete(sourceKey);
+      this.transitionMeshNativeSignatures.delete(sourceKey);
+      this.pendingNativeTransitions.delete(sourceKey);
+      this.transitionMeshStats.delete(sourceKey);
+    }
+
+    let totalCells = 0;
+    let totalEmittedCells = 0;
+    let totalTriangles = 0;
+    let totalMissingSampleCells = 0;
+    let totalDegenerateCells = 0;
+    for (const stats of this.transitionMeshStats.values()) {
+      totalCells += stats.cells;
+      totalEmittedCells += stats.emittedCells;
+      totalTriangles += stats.triangles;
+      totalMissingSampleCells += stats.missingSampleCells;
+      totalDegenerateCells += stats.degenerateCells;
+    }
+    this.lastStats.lodTransitionMeshCells = totalCells;
+    this.lastStats.lodTransitionMeshEmittedCells = totalEmittedCells;
+    this.lastStats.lodTransitionMeshTriangles = totalTriangles;
+    this.lastStats.lodTransitionMeshMissingSampleCells = totalMissingSampleCells;
+    this.lastStats.lodTransitionMeshDegenerateCells = totalDegenerateCells;
+    this.lastStats.lodTransitionMeshNative = anyNative;
   }
 
   refreshWorkerScratchStats(): void {
@@ -3699,11 +3760,12 @@ class ChunkStreamer {
         caveGraphTileCache.markWorkerTileFailed(worker.currentCaveGraphTileKey);
         worker.currentCaveGraphTileKey = undefined;
       }
-      if (worker.currentLodTransitionMeshSignature) {
-        if (this.pendingNativeTransitionMeshSignature === worker.currentLodTransitionMeshSignature) {
-          this.pendingNativeTransitionMeshSignature = '';
+      if (worker.currentLodTransitionMesh) {
+        const { sourceKey, signature } = worker.currentLodTransitionMesh;
+        if (this.pendingNativeTransitions.get(sourceKey) === signature) {
+          this.pendingNativeTransitions.delete(sourceKey);
         }
-        worker.currentLodTransitionMeshSignature = undefined;
+        worker.currentLodTransitionMesh = undefined;
       }
       for (const job of worker.currentJobs ?? []) {
         if (this.states.get(job.key) === 'pending') this.states.delete(job.key);
@@ -3869,11 +3931,11 @@ class ChunkStreamer {
   }
 
   private completeLodTransitionMeshJob(worker: ChunkWorker, msg: LodTransitionMeshMessage): void {
-    if (this.pendingNativeTransitionMeshSignature === msg.signature) {
-      this.pendingNativeTransitionMeshSignature = '';
+    if (this.pendingNativeTransitions.get(msg.sourceKey) === msg.signature) {
+      this.pendingNativeTransitions.delete(msg.sourceKey);
     }
-    worker.currentLodTransitionMeshSignature = undefined;
-    if (msg.version !== this.version || msg.signature !== this.runtimeTransitionMeshSignature) {
+    worker.currentLodTransitionMesh = undefined;
+    if (msg.version !== this.version || this.transitionMeshSignatures.get(msg.sourceKey) !== msg.signature) {
       this.idle.push(worker);
       this.dispatch();
       return;
@@ -3882,19 +3944,24 @@ class ChunkStreamer {
       worker.scratchStats = msg.stats.workerScratch;
       this.refreshWorkerScratchStats();
     }
-    this.runtimeNativeTransitionMeshSignature = msg.signature;
+    this.transitionMeshNativeSignatures.set(msg.sourceKey, msg.signature);
     if (msg.vertices.length > 0 && msg.indices.length >= 3) {
-      this.renderer.createChunkMesh(LOD_TRANSITION_MESH_KEY, msg.vertices, msg.indices, msg.frame, msg.bounds, msg.stats);
-      this.lastStats.lodTransitionMeshCells = msg.stats.lodTransitionMeshCells ?? this.lastStats.lodTransitionMeshCells;
-      this.lastStats.lodTransitionMeshEmittedCells = msg.stats.lodTransitionMeshEmittedCells ?? this.lastStats.lodTransitionMeshEmittedCells;
-      this.lastStats.lodTransitionMeshTriangles = msg.indices.length / 3;
-      this.lastStats.lodTransitionMeshMissingSampleCells = msg.stats.lodTransitionMeshMissingSampleCells ?? this.lastStats.lodTransitionMeshMissingSampleCells;
-      this.lastStats.lodTransitionMeshDegenerateCells = msg.stats.lodTransitionMeshDegenerateCells ?? this.lastStats.lodTransitionMeshDegenerateCells;
+      this.renderer.createChunkMesh(lodTransitionMeshKey(msg.sourceKey), msg.vertices, msg.indices, msg.frame, msg.bounds, msg.stats);
+      this.transitionMeshStats.set(msg.sourceKey, {
+        cells: msg.stats.lodTransitionMeshCells ?? 0,
+        emittedCells: msg.stats.lodTransitionMeshEmittedCells ?? 0,
+        triangles: msg.indices.length / 3,
+        missingSampleCells: msg.stats.lodTransitionMeshMissingSampleCells ?? 0,
+        degenerateCells: msg.stats.lodTransitionMeshDegenerateCells ?? 0,
+      });
       this.lastStats.lodTransitionMeshNative = true;
       this.lastStats.overflow += msg.stats?.overflow ? 1 : 0;
       this.meshTimes.push(msg.stats?.ms ?? 0);
       if (this.meshTimes.length > 80) this.meshTimes.shift();
       this.lastStats.avgMeshMs = this.meshTimes.reduce((a, b) => a + b, 0) / this.meshTimes.length;
+    } else {
+      this.renderer.removeChunk(lodTransitionMeshKey(msg.sourceKey));
+      this.transitionMeshStats.delete(msg.sourceKey);
     }
     this.idle.push(worker);
     this.dispatch();
