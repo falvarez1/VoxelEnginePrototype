@@ -1399,7 +1399,14 @@ fn material_color(m: vec4<f32>, world: vec3<f32>, n: vec3<f32>) -> vec3<f32> {
     let strata = 0.5 + 0.5 * sin(world.y * 0.78 + world.x * 0.035 + d.large * 2.0);
     let crack = smoothstep(0.35, 0.95, abs(d.medium));
     let lichen = smoothstep(0.35, 0.85, d.large) * slope * 0.18;
-    var color = vec3<f32>(0.150, 0.154, 0.150);
+    // Grey/brown slope variation: a large-scale mask biased by face steepness
+    // splits rock between warm iron-brown bands and cool grey-blue stone.
+    // Brightness is kept near the old flat base so it can't blow out under the
+    // existing cinematic lighting multipliers.
+    let warmMask = smoothstep(-0.34, 0.52, d.large + steep * 0.30);
+    let warmRock = vec3<f32>(0.196, 0.166, 0.130);
+    let coldRock = vec3<f32>(0.150, 0.160, 0.166);
+    var color = mix(coldRock, warmRock, warmMask);
     color = color + vec3<f32>(0.066, 0.064, 0.058) * strata;
     color = color - vec3<f32>(0.050, 0.052, 0.050) * crack;
     color = color + vec3<f32>(0.056, 0.124, 0.040) * lichen * (1.0 - snowMask * 0.45);
