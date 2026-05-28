@@ -1586,7 +1586,15 @@ fn fs_main(input: VertexOut) -> @location(0) vec4<f32> {
     color = mix(color, color * vec3<f32>(0.84, 1.00, 1.22) + vec3<f32>(0.05, 0.075, 0.10) * snowPreserve, snowPreserve * 0.42);
     let grassPreserve = 1.0 - step(0.5, abs(input.material.x));
     color = mix(color, color * vec3<f32>(0.84, 1.10, 0.78), grassPreserve * 0.18);
-    color = color * (1.0 - procedural_forest_shadow(input.world, n, input.material));
+    var forestShadow = procedural_forest_shadow(input.world, n, input.material);
+    if (shadow.params.x > 0.5) {
+      // Real sun shadows cover the near region; fade the procedural forest-shadow
+      // approximation out there so the two don't double-darken, while keeping it
+      // for the mid-distance band beyond the shadow map's reach.
+      let realCoverage = 1.0 - smoothstep(520.0, 980.0, distance(scene.camera.xyz, input.world));
+      forestShadow = forestShadow * (1.0 - realCoverage);
+    }
+    color = color * (1.0 - forestShadow);
     color = apply_atmosphere(color, input.world);
     color = tone_map(color);
   } else {
