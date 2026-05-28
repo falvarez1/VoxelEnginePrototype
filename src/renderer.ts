@@ -2194,6 +2194,7 @@ struct VertexOut {
   @location(3) kind: f32,
   @location(4) tint: f32,
   @location(5) seed: f32,
+  @location(6) canopyY: f32,
 };
 @vertex
 fn vs_main(input: VertexIn) -> VertexOut {
@@ -2237,6 +2238,7 @@ fn vs_main(input: VertexIn) -> VertexOut {
   out.kind = input.kind;
   out.tint = input.tint;
   out.seed = input.seed;
+  out.canopyY = input.local.y;
   out.clip = scene.viewProjRel * vec4<f32>(world - scene.camera.xyz, 1.0);
   return out;
 }
@@ -2257,6 +2259,12 @@ fn fs_main(input: VertexOut) -> @location(0) vec4<f32> {
     color = mix(vec3<f32>(0.23, 0.22, 0.20), vec3<f32>(0.47, 0.40, 0.31), variation * 0.62);
     color = mix(color, vec3<f32>(0.22, 0.29, 0.17), lichen * 0.20);
   }
+  // Darker inner/lower pine canopy: lower tiers sit under the canopy above and
+  // read as shadowed, giving forests depth instead of a flat uniform green.
+  // canopyY is the mesh-local height (~0.1 at the base, ~1.7 at the apex tips).
+  let pineCanopy = select(0.0, 1.0, input.kind >= 0.5 && input.kind < 1.5 && input.part >= 0.5);
+  let canopyAO = mix(0.60, 1.0, clamp(input.canopyY / 1.5, 0.0, 1.0));
+  color = mix(color, color * canopyAO, pineCanopy);
   let ambient = mix(vec3<f32>(0.007, 0.020, 0.040), vec3<f32>(0.062, 0.112, 0.060), max(n.y, 0.0));
   let selfShade = mix(0.26, 1.16, smoothstep(-0.2, 0.9, n.y + diffuse * 0.34));
   color *= (ambient + warmSun * (0.060 + diffuse * 1.92)) * selfShade;
