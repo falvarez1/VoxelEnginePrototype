@@ -1189,10 +1189,16 @@ function scenicWaterClearingAt(x: number, z: number, cameraPosition: Vec3): bool
   return false;
 }
 
-function buildScenicVegetationInstances(cameraPosition: Vec3, preserveNearTerrainVegetation: boolean): Float32Array {
+function buildScenicVegetationInstances(cameraPosition: Vec3, preserveNearTerrainVegetation: boolean, nearClearingRadius: number): Float32Array {
   const values: number[] = [];
   const step = preserveNearTerrainVegetation ? SCENIC_NEAR_FOREST_STEP : SCENIC_FOREST_STEP;
-  const innerClearing = preserveNearTerrainVegetation ? SCENIC_NEAR_FOREST_INNER_CLEARING : SCENIC_FOREST_INNER_CLEARING;
+  // When near SDF terrain is on, clear the scenic far-forest out to where the
+  // streamed near vegetation actually reaches (nearClearingRadius), not just the
+  // tiny fixed 44m clearing. Otherwise both layers render trees in the near
+  // footprint and stack into a doubled "blob" of overlapping meshes.
+  const innerClearing = preserveNearTerrainVegetation
+    ? Math.max(SCENIC_NEAR_FOREST_INNER_CLEARING, nearClearingRadius)
+    : SCENIC_FOREST_INNER_CLEARING;
   const densityScale = preserveNearTerrainVegetation ? 0.84 : 0.94;
   const minGX = Math.floor((cameraPosition[0] - SCENIC_FOREST_RADIUS) / step);
   const maxGX = Math.ceil((cameraPosition[0] + SCENIC_FOREST_RADIUS) / step);
@@ -3156,7 +3162,19 @@ export class Renderer {
   }
 
   private updateScenicVegetation(cameraPosition: Vec3): void {
-    const instances = buildScenicVegetationInstances(cameraPosition, this.settings.nearTerrainEnabled);
+    // Derive how far the streamed near vegetation reaches from the loaded patch
+    // bounds, so the scenic far-forest can clear that footprint and not double
+    // up on top of it. Self-tracks any stream radius / LOD setting.
+    let nearClearingRadius = 0;
+    if (this.settings.nearTerrainEnabled) {
+      for (const patch of this.vegetation.values()) {
+        const dx = patch.bounds.center[0] - cameraPosition[0];
+        const dz = patch.bounds.center[2] - cameraPosition[2];
+        const reach = Math.hypot(dx, dz) + patch.bounds.radius;
+        if (reach > nearClearingRadius) nearClearingRadius = reach;
+      }
+    }
+    const instances = buildScenicVegetationInstances(cameraPosition, this.settings.nearTerrainEnabled, nearClearingRadius);
     if (instances.length <= 0) {
       this.scenicVegetation = null;
       return;
