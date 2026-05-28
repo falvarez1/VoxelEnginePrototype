@@ -2357,6 +2357,10 @@ export class Renderer {
       this.capabilities.deviceLostReason = `${info.reason}${info.message ? `: ${info.message}` : ''}`;
       console.error(`WebGPU device lost: ${this.capabilities.deviceLostReason}`);
     });
+    this.device.onuncapturederror = (event) => {
+      const message = event.error?.message ?? String(event.error);
+      console.error('[WebGPU error]', message);
+    };
     const context = this.canvas.getContext('webgpu');
     if (!context) throw new Error('Failed to create WebGPU canvas context.');
     this.context = context;
@@ -2431,15 +2435,15 @@ export class Renderer {
       bindGroupLayouts: [this.depthPyramidMipBindGroupLayout],
     });
 
-    const terrainModule = this.device.createShaderModule({ label: 'terrain shader', code: TERRAIN_SHADER });
-    const skyModule = this.device.createShaderModule({ label: 'sky shader', code: SKY_SHADER });
-    const clusterCullModule = this.device.createShaderModule({ label: 'cluster cull shader', code: CLUSTER_CULL_SHADER });
-    const terrainArenaCullModule = this.device.createShaderModule({ label: 'terrain arena cull shader', code: TERRAIN_ARENA_CULL_SHADER });
-    const depthPyramidFirstModule = this.device.createShaderModule({ label: 'depth pyramid first shader', code: DEPTH_PYRAMID_FIRST_SHADER });
-    const depthPyramidMipModule = this.device.createShaderModule({ label: 'depth pyramid mip shader', code: DEPTH_PYRAMID_MIP_SHADER });
-    const waterModule = this.device.createShaderModule({ label: 'water shader', code: WATER_SHADER });
-    const beaconModule = this.device.createShaderModule({ label: 'beacon shader', code: BEACON_SHADER });
-    const vegetationModule = this.device.createShaderModule({ label: 'vegetation shader', code: VEGETATION_SHADER });
+    const terrainModule = this.createShaderModuleChecked('terrain shader', TERRAIN_SHADER);
+    const skyModule = this.createShaderModuleChecked('sky shader', SKY_SHADER);
+    const clusterCullModule = this.createShaderModuleChecked('cluster cull shader', CLUSTER_CULL_SHADER);
+    const terrainArenaCullModule = this.createShaderModuleChecked('terrain arena cull shader', TERRAIN_ARENA_CULL_SHADER);
+    const depthPyramidFirstModule = this.createShaderModuleChecked('depth pyramid first shader', DEPTH_PYRAMID_FIRST_SHADER);
+    const depthPyramidMipModule = this.createShaderModuleChecked('depth pyramid mip shader', DEPTH_PYRAMID_MIP_SHADER);
+    const waterModule = this.createShaderModuleChecked('water shader', WATER_SHADER);
+    const beaconModule = this.createShaderModuleChecked('beacon shader', BEACON_SHADER);
+    const vegetationModule = this.createShaderModuleChecked('vegetation shader', VEGETATION_SHADER);
 
     const terrainVertexLayout: GPUVertexBufferLayout = {
       arrayStride: PACKED_TERRAIN_VERTEX_STRIDE,
@@ -2656,6 +2660,22 @@ export class Renderer {
   private destroyBuffer(buffer: GPUBuffer | null | undefined): void {
     if (!buffer) return;
     this.uploadRing.destroyBuffer(buffer);
+  }
+
+  private createShaderModuleChecked(label: string, code: string): GPUShaderModule {
+    const module = this.device.createShaderModule({ label, code });
+    void module.getCompilationInfo().then(info => {
+      for (const m of info.messages) {
+        const location = `${m.lineNum}:${m.linePos}`;
+        const prefix = `[WebGPU shader ${m.type} in "${label}" at ${location}]`;
+        if (m.type === 'error') console.error(prefix, m.message);
+        else if (m.type === 'warning') console.warn(prefix, m.message);
+        else console.info(prefix, m.message);
+      }
+    }).catch(error => {
+      console.warn(`[WebGPU compilation info "${label}" failed]`, error);
+    });
+    return module;
   }
 
   private createDepthPyramid(width: number, height: number): DepthPyramidResources {
