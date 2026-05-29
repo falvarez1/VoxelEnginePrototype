@@ -19,6 +19,7 @@ import type {
 import type { FlyCamera, Mat4, Vec3 } from './math.ts';
 import { mat4Identity, mat4LookAt, mat4Multiply, mat4Ortho } from './math.ts';
 import { FrameGraph } from './render_graph.ts';
+import { RenderTargets } from './render_targets.ts';
 
 function roundUp4(n: number): number { return (n + 3) & ~3; }
 
@@ -2564,6 +2565,10 @@ export class Renderer {
   // toggles, and best-effort GPU pass timing. Wraps the existing passes without
   // changing what is drawn (Photon-class Upgrade 1, compatibility graph).
   frameGraph!: FrameGraph;
+  // Owns attachment-texture allocation (canvas depth, sun shadow depth) through
+  // one resize path. The depthTexture / shadowDepth* fields below alias its
+  // handles so existing pass code is unchanged (Photon-class Upgrade 1).
+  renderTargets!: RenderTargets;
   uploadRing!: GpuUploadRing;
   terrainArena!: TerrainGpuArena;
   treeVertexBuffer!: GPUBuffer;
@@ -2659,6 +2664,15 @@ export class Renderer {
     this.capabilities.multiDrawIndirect = this.device.features.has(MULTI_DRAW_INDIRECT_FEATURE);
     this.capabilities.timestampQuery = this.device.features.has('timestamp-query');
     this.frameGraph = new FrameGraph(this.device, this.capabilities.timestampQuery, parseRenderGraphOverrides());
+    this.renderTargets = new RenderTargets(this.device, {
+      depthFormat: DEPTH_FORMAT,
+      shadowFormat: DEPTH_FORMAT,
+      shadowSize: SHADOW_MAP_SIZE,
+    });
+    // Alias the registry's shadow handles so the bind groups/passes below keep
+    // using this.shadowDepth* unchanged.
+    this.shadowDepthTexture = this.renderTargets.shadowDepthTexture;
+    this.shadowDepthView = this.renderTargets.shadowDepthView;
     this.uploadRing = new GpuUploadRing(this.device);
     this.hiZOcclusionCounterBuffer = this.device.createBuffer({
       label: 'hi-z occlusion counters',
@@ -2706,13 +2720,8 @@ export class Renderer {
       size: 16 * 4 + 4 * 4,
       usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
     });
-    this.shadowDepthTexture = this.device.createTexture({
-      label: 'sun shadow depth',
-      size: { width: SHADOW_MAP_SIZE, height: SHADOW_MAP_SIZE },
-      format: DEPTH_FORMAT,
-      usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING,
-    });
-    this.shadowDepthView = this.shadowDepthTexture.createView();
+    // Shadow depth texture + view are owned by this.renderTargets (allocated in
+    // its constructor) and already aliased onto this.shadowDepth* above.
     const shadowSampler = this.device.createSampler({
       label: 'shadow comparison sampler',
       compare: 'less',
@@ -3170,16 +3179,13 @@ export class Renderer {
     if (this.canvas.width === width && this.canvas.height === height && this.depthTexture && this.depthPyramid) return;
     this.canvas.width = width;
     this.canvas.height = height;
-    this.depthTexture?.destroy();
+    // Re-allocate the canvas depth target through the registry, then rebuild the
+    // derived depth pyramid against it.
+    this.renderTargets.resizeDepth(width, height);
+    this.depthTexture = this.renderTargets.depthTexture ?? undefined;
     this.depthPyramid?.texture.destroy();
     this.depthPyramidReady = false;
     this.depthPyramidViewProj = null;
-    this.depthTexture = this.device.createTexture({
-      label: 'depth texture',
-      size: [width, height],
-      format: DEPTH_FORMAT,
-      usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING,
-    });
     this.depthPyramid = this.createDepthPyramid(width, height);
   }
 
