@@ -1329,6 +1329,30 @@ const WGSL_HELPERS = `fn saturate(x: f32) -> f32 {
   return clamp(x, 0.0, 1.0);
 }`;
 
+// Fullscreen composite/blit (Photon Upgrade 3). Samples one source texture (a
+// G-buffer/scene-color attachment) and writes it to the swapchain. Used by the
+// deferred path's present stage; its own bind group (texture + sampler).
+const COMPOSITE_SHADER = /* wgsl */`
+@group(0) @binding(0) var srcTex: texture_2d<f32>;
+@group(0) @binding(1) var srcSampler: sampler;
+struct VOut {
+  @builtin(position) clip: vec4<f32>,
+  @location(0) uv: vec2<f32>,
+};
+@vertex
+fn vs_main(@builtin(vertex_index) vid: u32) -> VOut {
+  var pos = array<vec2<f32>, 3>(vec2<f32>(-1.0, -1.0), vec2<f32>(3.0, -1.0), vec2<f32>(-1.0, 3.0));
+  let xy = pos[vid];
+  var out: VOut;
+  out.clip = vec4<f32>(xy, 0.0, 1.0);
+  out.uv = vec2<f32>(xy.x * 0.5 + 0.5, 1.0 - (xy.y * 0.5 + 0.5));
+  return out;
+}
+@fragment
+fn fs_main(input: VOut) -> @location(0) vec4<f32> {
+  return textureSampleLevel(srcTex, srcSampler, input.uv, 0.0);
+}`;
+
 const TERRAIN_SHADER = /* wgsl */`
 ${SCENE_WGSL}
 
@@ -1674,6 +1698,25 @@ fn chunk_debug_color(world: vec3<f32>) -> vec3<f32> {
   let g = f32((h >> 8u) & 255u) / 255.0;
   let b = f32((h >> 16u) & 255u) / 255.0;
   return mix(vec3<f32>(0.18, 0.22, 0.28), vec3<f32>(r, g, b), 0.82);
+}
+
+// Deferred G-buffer geometry output (Photon Upgrade 3). Writes the unlit surface
+// inputs the deferred lighting pass needs: albedo (material_color) + packed
+// material id, and world normal + AO. Reuses the in-module material_color so it
+// stays identical to the forward path. World position is reconstructed from
+// depth in the lighting pass rather than stored here.
+struct GBufferOut {
+  @location(0) albedo: vec4<f32>,
+  @location(1) normalAo: vec4<f32>,
+};
+
+@fragment
+fn fs_gbuffer(input: VertexOut) -> GBufferOut {
+  let n = normalize(input.normal);
+  var out: GBufferOut;
+  out.albedo = vec4<f32>(material_color(input.material, input.world, n), input.material.x / 255.0);
+  out.normalAo = vec4<f32>(n * 0.5 + vec3<f32>(0.5), input.ao);
+  return out;
 }
 
 @fragment
@@ -2534,6 +2577,13 @@ export class Renderer {
   vegetationPipeline!: GPURenderPipeline;
   beaconPipeline!: GPURenderPipeline;
   terrainArenaPipeline!: GPURenderPipeline;
+  // Deferred path (Upgrade 3): G-buffer geometry pipeline for the near terrain
+  // arena, plus the fullscreen composite pipeline/sampler. Created always but
+  // only exercised when renderGraphMode === 'deferred'.
+  gbufferTerrainArenaPipeline!: GPURenderPipeline;
+  compositePipeline!: GPURenderPipeline;
+  compositeBindGroupLayout!: GPUBindGroupLayout;
+  compositeSampler!: GPUSampler;
   shadowCasterPipeline!: GPURenderPipeline;
   shadowVegetationCasterPipeline!: GPURenderPipeline;
   shadowCasterBindGroupLayout!: GPUBindGroupLayout;
@@ -2887,6 +2937,43 @@ export class Renderer {
       fragment: { module: terrainModule, entryPoint: 'fs_main', targets: [{ format: this.format }] },
       primitive: { topology: 'triangle-list', cullMode: 'none' },
       depthStencil: { format: DEPTH_FORMAT, depthWriteEnabled: true, depthCompare: 'less' },
+    });
+
+    // Deferred G-buffer geometry pipeline: same terrain vs_main, but fs_gbuffer
+    // writes albedo + world-normal/AO to the MRT G-buffer attachments. Reuses the
+    // terrain pipeline layout (group 1 is bound but unused by fs_gbuffer).
+    this.gbufferTerrainArenaPipeline = this.device.createRenderPipeline({
+      label: 'gbuffer terrain arena pipeline',
+      layout: terrainPipelineLayout,
+      vertex: { module: terrainModule, entryPoint: 'vs_main', buffers: [terrainVertexLayout, terrainArenaOriginLayout] },
+      fragment: {
+        module: terrainModule,
+        entryPoint: 'fs_gbuffer',
+        targets: [
+          { format: this.renderTargets.gbufferAlbedoFormat },
+          { format: this.renderTargets.gbufferNormalFormat },
+        ],
+      },
+      primitive: { topology: 'triangle-list', cullMode: 'none' },
+      depthStencil: { format: DEPTH_FORMAT, depthWriteEnabled: true, depthCompare: 'less' },
+    });
+
+    // Fullscreen composite pipeline (deferred present stage).
+    const compositeModule = this.createShaderModuleChecked('composite shader', COMPOSITE_SHADER);
+    this.compositeBindGroupLayout = this.device.createBindGroupLayout({
+      label: 'composite bind group layout',
+      entries: [
+        { binding: 0, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'float' } },
+        { binding: 1, visibility: GPUShaderStage.FRAGMENT, sampler: { type: 'filtering' } },
+      ],
+    });
+    this.compositeSampler = this.device.createSampler({ label: 'composite sampler', magFilter: 'linear', minFilter: 'linear' });
+    this.compositePipeline = this.device.createRenderPipeline({
+      label: 'composite pipeline',
+      layout: this.device.createPipelineLayout({ bindGroupLayouts: [this.compositeBindGroupLayout] }),
+      vertex: { module: compositeModule, entryPoint: 'vs_main' },
+      fragment: { module: compositeModule, entryPoint: 'fs_main', targets: [{ format: this.format }] },
+      primitive: { topology: 'triangle-list', cullMode: 'none' },
     });
 
     const shadowCasterModule = this.createShaderModuleChecked('shadow caster shader', SHADOW_CASTER_SHADER);
@@ -4123,6 +4210,65 @@ export class Renderer {
     const colorView = this.context.getCurrentTexture().createView();
     if (!this.depthTexture) throw new Error('Depth texture is not initialized.');
     const depthView = this.depthTexture.createView();
+
+    if (this.renderGraphMode === 'deferred') {
+      // Deferred G-buffer geometry pass: the near terrain arena writes albedo +
+      // world-normal/AO into the G-buffer, then a fullscreen composite blits the
+      // albedo to the swapchain. This validates the geometry pass in isolation
+      // (unlit terrain material colour); far terrain, sky/water/vegetation, and
+      // real deferred lighting follow in later slices. Behind renderGraph=deferred
+      // only — the compat path below is untouched.
+      const albedoTex = this.renderTargets.gbufferAlbedoTexture;
+      const normalTex = this.renderTargets.gbufferNormalTexture;
+      if (albedoTex && normalTex) {
+        const albedoView = albedoTex.createView();
+        const normalView = normalTex.createView();
+        const gpass = encoder.beginRenderPass({
+          label: 'gbuffer geometry pass',
+          colorAttachments: [
+            { view: albedoView, clearValue: { r: 0, g: 0, b: 0, a: 0 }, loadOp: 'clear', storeOp: 'store' },
+            { view: normalView, clearValue: { r: 0, g: 0, b: 0, a: 0 }, loadOp: 'clear', storeOp: 'store' },
+          ],
+          depthStencilAttachment: { view: depthView, depthClearValue: 1, depthLoadOp: 'clear', depthStoreOp: 'store' },
+          timestampWrites: this.frameGraph.timed('gbuffer-geometry', 'render', false),
+        });
+        if (
+          terrainArenaActive
+          && terrainArenaReplaySlots > 0
+          && this.terrainArena.vertexBuffer
+          && this.terrainArena.originBuffer
+          && this.terrainArena.indexBuffer
+          && this.terrainArena.compactIndirectBuffer
+        ) {
+          gpass.setBindGroup(0, this.uniformBindGroup);
+          gpass.setBindGroup(1, this.shadowSampleBindGroup);
+          gpass.setPipeline(this.gbufferTerrainArenaPipeline);
+          gpass.setVertexBuffer(0, this.terrainArena.vertexBuffer);
+          gpass.setVertexBuffer(1, this.terrainArena.originBuffer);
+          gpass.setIndexBuffer(this.terrainArena.indexBuffer, 'uint32');
+          for (let drawSlot = 0; drawSlot < terrainArenaReplaySlots; drawSlot++) {
+            gpass.drawIndexedIndirect(this.terrainArena.compactIndirectBuffer, drawSlot * INDIRECT_INDEXED_ARGS_BYTES);
+          }
+        }
+        gpass.end();
+        const compositeBindGroup = this.device.createBindGroup({
+          layout: this.compositeBindGroupLayout,
+          entries: [
+            { binding: 0, resource: albedoView },
+            { binding: 1, resource: this.compositeSampler },
+          ],
+        });
+        const cpass = encoder.beginRenderPass({
+          label: 'deferred composite pass',
+          colorAttachments: [{ view: colorView, clearValue: { r: 0.02, g: 0.03, b: 0.05, a: 1 }, loadOp: 'clear', storeOp: 'store' }],
+          timestampWrites: this.frameGraph.timed('deferred-composite', 'render', false),
+        });
+        cpass.setPipeline(this.compositePipeline);
+        cpass.setBindGroup(0, compositeBindGroup);
+        cpass.draw(3);
+        cpass.end();
+      }
+    } else {
     const pass = encoder.beginRenderPass({
       label: 'main render pass',
       colorAttachments: [{
@@ -4211,6 +4357,7 @@ export class Renderer {
     }
 
     pass.end();
+    }
     this.encodeDepthPyramid(encoder, viewProj);
     this.frameGraph.resolve(encoder);
     this.device.queue.submit([encoder.finish()]);
