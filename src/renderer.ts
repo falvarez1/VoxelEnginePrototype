@@ -1622,7 +1622,12 @@ fn apply_atmosphere(color: vec3<f32>, world: vec3<f32>) -> vec3<f32> {
   let hazeBlue = vec3<f32>(0.50, 0.60, 0.70);
   let hazeGold = vec3<f32>(1.72, 0.94, 0.32);
   let fogColor = mix(hazeBlue, hazeGold, saturate(sunSide * 0.86 + lowSun * 0.03));
-  let aerial = mix(color, fogColor, min(0.38, fog * (0.46 + heightFog * 0.08)));
+  // Aerial perspective: let distant terrain — especially high peaks above the
+  // camera (heightFog) — fade further into the blue-grey haze toward the
+  // reference look. The distance-ramped fog keeps the foreground clear, and the
+  // whole term is gated by atmosphereStrength (scene.visual.y, so fog goes to 0
+  // when the setting is 0), keeping this tunable/reversible.
+  let aerial = mix(color, fogColor, min(0.52, fog * (0.50 + heightFog * 0.24)));
   let glare = pow(sunSide, 3.8) * fog * lowSun;
   let leftWorld = saturate(1.0 - smoothstep(-260.0, 1220.0, world.x - scene.camera.x + d * 0.10));
   let lowAngleVeil = leftWorld * lowSun * smoothstep(240.0, 1900.0, d) * (1.0 - smoothstep(3600.0, 5200.0, d));
