@@ -2581,6 +2581,7 @@ export class Renderer {
   // arena, plus the fullscreen composite pipeline/sampler. Created always but
   // only exercised when renderGraphMode === 'deferred'.
   gbufferTerrainArenaPipeline!: GPURenderPipeline;
+  gbufferTerrainPipeline!: GPURenderPipeline;
   compositePipeline!: GPURenderPipeline;
   compositeBindGroupLayout!: GPUBindGroupLayout;
   compositeSampler!: GPUSampler;
@@ -2946,6 +2947,24 @@ export class Renderer {
       label: 'gbuffer terrain arena pipeline',
       layout: terrainPipelineLayout,
       vertex: { module: terrainModule, entryPoint: 'vs_main', buffers: [terrainVertexLayout, terrainArenaOriginLayout] },
+      fragment: {
+        module: terrainModule,
+        entryPoint: 'fs_gbuffer',
+        targets: [
+          { format: this.renderTargets.gbufferAlbedoFormat },
+          { format: this.renderTargets.gbufferNormalFormat },
+        ],
+      },
+      primitive: { topology: 'triangle-list', cullMode: 'none' },
+      depthStencil: { format: DEPTH_FORMAT, depthWriteEnabled: true, depthCompare: 'less' },
+    });
+
+    // Far-terrain (clipmap vista) variant of the G-buffer geometry pipeline, so
+    // the deferred path covers the full terrain, not just the near arena.
+    this.gbufferTerrainPipeline = this.device.createRenderPipeline({
+      label: 'gbuffer terrain (far) pipeline',
+      layout: terrainPipelineLayout,
+      vertex: { module: terrainModule, entryPoint: 'vs_main', buffers: [terrainVertexLayout, terrainOriginLayout] },
       fragment: {
         module: terrainModule,
         entryPoint: 'fs_gbuffer',
@@ -4232,6 +4251,15 @@ export class Renderer {
           depthStencilAttachment: { view: depthView, depthClearValue: 1, depthLoadOp: 'clear', depthStoreOp: 'store' },
           timestampWrites: this.frameGraph.timed('gbuffer-geometry', 'render', false),
         });
+        gpass.setBindGroup(0, this.uniformBindGroup);
+        gpass.setBindGroup(1, this.shadowSampleBindGroup);
+        if (this.settings.farTerrainEnabled && this.farTerrain) {
+          gpass.setPipeline(this.gbufferTerrainPipeline);
+          gpass.setVertexBuffer(0, this.farTerrain.vertexBuffer);
+          gpass.setVertexBuffer(1, this.farTerrain.originBuffer);
+          gpass.setIndexBuffer(this.farTerrain.indexBuffer, 'uint32');
+          gpass.drawIndexed(this.farTerrain.indexCount);
+        }
         if (
           terrainArenaActive
           && terrainArenaReplaySlots > 0
@@ -4240,8 +4268,6 @@ export class Renderer {
           && this.terrainArena.indexBuffer
           && this.terrainArena.compactIndirectBuffer
         ) {
-          gpass.setBindGroup(0, this.uniformBindGroup);
-          gpass.setBindGroup(1, this.shadowSampleBindGroup);
           gpass.setPipeline(this.gbufferTerrainArenaPipeline);
           gpass.setVertexBuffer(0, this.terrainArena.vertexBuffer);
           gpass.setVertexBuffer(1, this.terrainArena.originBuffer);
