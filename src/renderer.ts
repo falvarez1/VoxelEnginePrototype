@@ -2521,6 +2521,15 @@ export class Renderer {
   // World-anchored scenic pond footprints (set during updateWater) used to cull
   // vegetation out of ponds so trees don't poke through the water surface.
   scenicPonds: { cx: number; cz: number; rx: number; rz: number; cos: number; sin: number }[] = [];
+  // Rendered river path (per-segment center X + half-extent) recorded during
+  // updateWater, so vegetation can be culled from the ACTUAL rendered river.
+  // The worker only excludes the physical river (get_river_center); the rendered
+  // river follows the scenic-blended center, which diverges and otherwise leaves
+  // trees standing in the water.
+  riverPath: Float32Array = new Float32Array(0);
+  riverZ0 = 0;
+  riverStep = 1;
+  riverCount = 0;
   shadowVegetationBatchBuffer: GPUBuffer | null = null;
   shadowVegetationBatchCapacityBytes = 0;
   shadowVegetationBatchScratch = new Float32Array(0);
@@ -3228,20 +3237,21 @@ export class Renderer {
     if (this.vegetationBatchScratch.length < floats) {
       this.vegetationBatchScratch = new Float32Array(floats);
     }
-    const hasPonds = this.scenicPonds.length > 0;
+    const cullWater = this.scenicPonds.length > 0 || (this.settings.waterEnabled && this.riverCount > 0);
     let offset = 0;
     for (const patch of visiblePatches) {
       const inst = patch.instances;
       const usable = patch.instanceCount * VEGETATION_INSTANCE_FLOATS;
-      if (!hasPonds) {
+      if (!cullWater) {
         this.vegetationBatchScratch.set(inst.subarray(0, usable), offset);
         offset += usable;
         continue;
       }
-      // Cull instances that fall inside a scenic pond footprint so trees don't
-      // stand in the water (instance x,z are at offsets 0 and 2).
+      // Cull instances that fall inside the rendered water (scenic ponds or the
+      // rendered river band) so trees don't stand in the water. Instance x,z are
+      // at offsets 0 and 2.
       for (let k = 0; k < usable; k += VEGETATION_INSTANCE_FLOATS) {
-        if (this.instanceInPond(inst[k], inst[k + 2])) continue;
+        if (this.instanceInWater(inst[k], inst[k + 2])) continue;
         this.vegetationBatchScratch.set(inst.subarray(k, k + VEGETATION_INSTANCE_FLOATS), offset);
         offset += VEGETATION_INSTANCE_FLOATS;
       }
@@ -3252,6 +3262,25 @@ export class Renderer {
     if (batch.byteLength > 0) this.device.queue.writeBuffer(buffer, 0, batch);
     this.vegetationBatchBytes = batch.byteLength;
     return { buffer: renderedInstances > 0 ? buffer : null, instanceCount: renderedInstances, lodCulledInstances: totalInstances - renderedInstances };
+  }
+
+  // True if (x,z) lies within the rendered water (a scenic pond or the rendered
+  // river band), used to keep vegetation from standing in the water.
+  private instanceInWater(x: number, z: number): boolean {
+    if (this.instanceInPond(x, z)) return true;
+    if (this.settings.waterEnabled && this.instanceInRiver(x, z)) return true;
+    return false;
+  }
+
+  // True if (x,z) lies within the rendered river band. O(1) lookup into the
+  // per-segment river path recorded during updateWater (center + half-extent).
+  private instanceInRiver(x: number, z: number): boolean {
+    if (this.riverCount <= 0) return false;
+    const i = Math.round((z - this.riverZ0) / this.riverStep);
+    if (i < 0 || i >= this.riverCount) return false;
+    const center = this.riverPath[i * 2];
+    const half = this.riverPath[i * 2 + 1];
+    return Math.abs(x - center) < half + 6.0;
   }
 
   // True if (x,z) lies within a scenic pond footprint (pond-local ellipse test,
@@ -3361,6 +3390,10 @@ export class Renderer {
     const vertices: number[] = [];
     const indices: number[] = [];
     const riverColumns = [-1.35, -1.0, -0.68, -0.34, 0, 0.34, 0.68, 1.0, 1.35] as const;
+    this.riverZ0 = cameraPosition[2] - length * 0.5;
+    this.riverStep = length / segments;
+    this.riverCount = segments + 1;
+    if (this.riverPath.length < this.riverCount * 2) this.riverPath = new Float32Array(this.riverCount * 2);
     for (let i = 0; i <= segments; i++) {
       const t = i / segments;
       const z = cameraPosition[2] + (t - 0.5) * length;
@@ -3375,6 +3408,8 @@ export class Renderer {
         + foregroundWiden * 8.0
         + smoothStep(900, 2400, Math.abs(z - cameraPosition[2])) * 5.8
         + (this.settings.nearTerrainEnabled ? mix(5.0, 0.0, scenicBlend) : 0.0);
+      this.riverPath[i * 2] = center;
+      this.riverPath[i * 2 + 1] = width * 1.35;
       const sdfCenterY = SCENIC_WATER_LEVEL + 0.16;
       const scenicCenterY = scenicFarTerrainHeight(center, z) + 0.10;
       for (const side of riverColumns) {
