@@ -335,6 +335,24 @@ export interface RendererStats {
   hiZOcclusionCulledClusters: number;
   hiZOcclusionTestedBatches: number;
   hiZOcclusionCulledBatches: number;
+  renderGraph: RenderGraphSummary;
+}
+
+// Per-frame render-graph report: the ordered passes the renderer submitted, with
+// stable names, optional/enabled state, whether they ran, and best-effort GPU
+// time (ms) when timestamp queries are supported.
+export interface RenderGraphPassReport {
+  name: string;
+  kind: 'cpu' | 'compute' | 'render';
+  optional: boolean;
+  enabled: boolean;
+  ran: boolean;
+  gpuMs: number | null;
+}
+
+export interface RenderGraphSummary {
+  timingAvailable: boolean;
+  passes: RenderGraphPassReport[];
 }
 
 export interface DensitySliceSnapshot {

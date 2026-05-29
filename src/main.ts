@@ -90,6 +90,7 @@ import type {
   EngineSettings,
   LodTransitionMeshMessage,
   MaterialTileMessage,
+  RenderGraphSummary,
   RegionDiffSummary,
   RegionEditBranchDiffSample,
   RegionEditDiffSample,
@@ -1907,6 +1908,17 @@ function formatCaveGraphProbe(probe: WorldgenProbe): string {
     : 'chamber none';
   const hook = probe.caveGraphBiomeHook ?? 'none';
   return `graph ${probe.caveGraphTileKey} ${passage}, ${chamber}, hook ${hook}`;
+}
+
+function formatRenderGraph(graph: RenderGraphSummary): string {
+  const parts = graph.passes.map(pass => {
+    if (!pass.enabled) return `${pass.name} off`;
+    if (!pass.ran) return `${pass.name} idle`;
+    const ms = pass.gpuMs != null ? ` ${pass.gpuMs.toFixed(2)}ms` : '';
+    return `${pass.name}${ms}`;
+  });
+  const note = graph.timingAvailable ? '' : ' (no timestamp-query)';
+  return `${parts.join(' · ')}${note}`;
 }
 
 function formatWorldgenProbe(probe: WorldgenProbe): string {
@@ -5329,6 +5341,7 @@ function updateOverlay(
     <b>Storm Canyon Voxel Prototype</b><br/>
     FPS: ${fps.toFixed(0)} | Frame: ${profile.avgFrameMs.toFixed(1)} ms avg | Draws: ${rstats.drawCalls} | SDF tris: ${(rstats.terrainTriangles / 1000).toFixed(0)}k | Clusters: ${rstats.terrainClusters}/${rstats.culledTerrainClusters} GPU visible/culled | Terrain arena: ${rstats.terrainClusterDrawCalls} indirect slots, ${rstats.terrainClusterDrawsSkipped} compacted-away clusters | Far tris: ${((rstats.farTerrainTriangles ?? 0) / 1000).toFixed(0)}k<br/>
     Render radius: ${streamer.baseStreamRadius}/${MAX_STREAM_RADIUS} base / ${streamer.effectiveStreamRadius} effective (${(streamer.effectiveStreamRadius * CHUNK_WORLD_SIZE).toFixed(0)}m) | LOD rings: ${streamer.terrainLodEnabled ? 'on' : 'off'} | Far vista: 4.6km clipmap | Target chunks: ${streamer.currentTargetChunks} | GPU terrain cull/Hi-Z: ${rstats.hiZOcclusionCulledBatches}/${rstats.hiZOcclusionTestedBatches} occluded/visible clusters<br/>
+    Render graph: ${formatRenderGraph(rstats.renderGraph)}<br/>
     LOD plan: ${streamer.lastStats.lodPlanTargetChunks} targets (0/1/2+: ${streamer.lastStats.lodPlanLod0Chunks}/${streamer.lastStats.lodPlanLod1Chunks}/${streamer.lastStats.lodPlanLod2PlusChunks}) | covered cells ${streamer.lastStats.lodPlanCoveredBaseCells} | transition faces ${streamer.lastStats.lodPlanTransitionFaces}/${streamer.lastStats.lodPlanTransitionEdges} on ${streamer.lastStats.lodPlanSkirtedChunks} chunks, ${streamer.lastStats.lodPlanTransitionCells} cells (${streamer.lastStats.lodPlanTransitionFaceBaseCells} face cells) | runtime mesh ${streamer.lastStats.lodTransitionMeshNative ? 'native' : 'TS'} ${streamer.lastStats.lodTransitionMeshEmittedCells}/${streamer.lastStats.lodTransitionMeshCells} cells, ${streamer.lastStats.lodTransitionMeshTriangles} tris, missing ${streamer.lastStats.lodTransitionMeshMissingSampleCells} | max LOD ${streamer.lastStats.lodPlanMaxLod}<br/>
     Survey beacons: ${game.collected}/${game.total} | Biomes: ${game.collectedBiomes.length}/${game.totalBiomes} ${nextSurvey} | Field contracts: ${game.completedContracts}/${game.totalContracts} ${nextContract}<br/>
     Route flags: ${game.visitedCheckpoints}/${game.totalCheckpoints} ${nextCheckpoint} | Hazards: ${game.clearedHazards}/${game.totalHazards} ${nextHazard}${activeHazard}<br/>

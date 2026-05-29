@@ -18,8 +18,25 @@ import type {
 } from './engine_contracts';
 import type { FlyCamera, Mat4, Vec3 } from './math.ts';
 import { mat4Identity, mat4LookAt, mat4Multiply, mat4Ortho } from './math.ts';
+import { FrameGraph } from './render_graph.ts';
 
 function roundUp4(n: number): number { return (n + 3) & ~3; }
+
+// Parse `pass.<alias>=0|1` query flags into render-graph overrides keyed by pass
+// name, so optional passes can be force-disabled for capture/debug without
+// touching the settings UI. Only genuinely-optional passes are exposed; the
+// required infrastructure passes (cull, depth pyramid, main forward) always run.
+function parseRenderGraphOverrides(): Record<string, boolean> {
+  const overrides: Record<string, boolean> = {};
+  if (typeof location === 'undefined' || !location.search) return overrides;
+  const params = new URLSearchParams(location.search);
+  const aliases: Record<string, string> = { 'pass.shadow': 'shadow-directional' };
+  for (const [flag, passName] of Object.entries(aliases)) {
+    const value = params.get(flag);
+    if (value !== null) overrides[passName] = value !== '0' && value.toLowerCase() !== 'false';
+  }
+  return overrides;
+}
 
 const FAR_TERRAIN_RINGS = [
   { inner: 120, outer: 1152, step: 16 },
@@ -2543,6 +2560,10 @@ export class Renderer {
   hiZOcclusionReadbackPending = false;
   hiZOcclusionReadbackReady = false;
   hiZOcclusion: HiZOcclusionCounters = { tested: 0, culled: 0 };
+  // Render-graph instrumentation layer: stable pass names, optional-pass query
+  // toggles, and best-effort GPU pass timing. Wraps the existing passes without
+  // changing what is drawn (Photon-class Upgrade 1, compatibility graph).
+  frameGraph!: FrameGraph;
   uploadRing!: GpuUploadRing;
   terrainArena!: TerrainGpuArena;
   treeVertexBuffer!: GPUBuffer;
@@ -2603,6 +2624,7 @@ export class Renderer {
     hiZOcclusionCulledClusters: 0,
     hiZOcclusionTestedBatches: 0,
     hiZOcclusionCulledBatches: 0,
+    renderGraph: { timingAvailable: false, passes: [] },
   };
   settings: RendererSettings = { ...DEFAULT_RENDERER_SETTINGS };
   capabilities: RuntimeCapabilities = {
@@ -2630,8 +2652,13 @@ export class Renderer {
     this.capabilities = detectCapabilities(adapter);
     const requiredFeatures: GPUFeatureName[] = [];
     if (this.capabilities.multiDrawIndirect) requiredFeatures.push(MULTI_DRAW_INDIRECT_FEATURE);
+    // Request timestamp queries when advertised so the render graph can time
+    // each GPU pass; purely additive (no effect on what is drawn).
+    if (this.capabilities.timestampQuery) requiredFeatures.push('timestamp-query');
     this.device = await adapter.requestDevice(requiredFeatures.length > 0 ? { requiredFeatures } : undefined);
     this.capabilities.multiDrawIndirect = this.device.features.has(MULTI_DRAW_INDIRECT_FEATURE);
+    this.capabilities.timestampQuery = this.device.features.has('timestamp-query');
+    this.frameGraph = new FrameGraph(this.device, this.capabilities.timestampQuery, parseRenderGraphOverrides());
     this.uploadRing = new GpuUploadRing(this.device);
     this.hiZOcclusionCounterBuffer = this.device.createBuffer({
       label: 'hi-z occlusion counters',
@@ -3767,7 +3794,7 @@ export class Renderer {
     this.device.queue.writeBuffer(this.uniformBuffer, 0, data);
   }
 
-  private writeShadowUniforms(camera: FlyCamera): void {
+  private writeShadowUniforms(camera: FlyCamera, active: boolean): void {
     const sd = this.settings.sunDirection ?? DEFAULT_RENDERER_SETTINGS.sunDirection;
     const len = Math.hypot(sd[0], sd[1], sd[2]) || 1;
     const lx = sd[0] / len, ly = sd[1] / len, lz = sd[2] / len;
@@ -3795,7 +3822,7 @@ export class Renderer {
     this.lightViewProj = lvp;
     const data = new Float32Array(16 + 4);
     data.set(this.lightViewProj, 0);
-    data[16] = this.settings.shadowsEnabled ? 1 : 0;
+    data[16] = active ? 1 : 0;
     data[17] = 1 / SHADOW_MAP_SIZE;
     data[18] = 0.0016;
     data[19] = 0;
@@ -3806,16 +3833,31 @@ export class Renderer {
     if (!this.depthPyramid) return;
     const width = this.canvas.width;
     const height = this.canvas.height;
-    const firstPass = encoder.beginComputePass({ label: 'hi-z depth copy pass' });
+    // Time the whole pyramid build as one scope: begin on the copy pass, end on
+    // the final mip pass (both on the copy pass when there are no mip levels).
+    const span = this.frameGraph.timedSpan('depth-pyramid', 'compute', false);
+    const hasMips = this.depthPyramid.mipLevels > 1;
+    const firstPass = encoder.beginComputePass({
+      label: 'hi-z depth copy pass',
+      timestampWrites: span
+        ? { querySet: span.querySet, beginningOfPassWriteIndex: span.beginIndex, ...(hasMips ? {} : { endOfPassWriteIndex: span.endIndex }) }
+        : undefined,
+    });
     firstPass.setPipeline(this.depthPyramidFirstPipeline);
     firstPass.setBindGroup(0, this.depthPyramid.firstBindGroup);
     firstPass.dispatchWorkgroups(Math.ceil(width / 8), Math.ceil(height / 8));
     firstPass.end();
 
+    const lastMip = this.depthPyramid.mipLevels - 1;
     for (let mip = 1; mip < this.depthPyramid.mipLevels; mip++) {
       const mipWidth = Math.max(1, width >> mip);
       const mipHeight = Math.max(1, height >> mip);
-      const pass = encoder.beginComputePass({ label: `hi-z mip ${mip} pass` });
+      const pass = encoder.beginComputePass({
+        label: `hi-z mip ${mip} pass`,
+        timestampWrites: span && mip === lastMip
+          ? { querySet: span.querySet, endOfPassWriteIndex: span.endIndex }
+          : undefined,
+      });
       pass.setPipeline(this.depthPyramidMipPipeline);
       pass.setBindGroup(0, this.depthPyramid.mipBindGroups[mip - 1]);
       pass.dispatchWorkgroups(Math.ceil(mipWidth / 8), Math.ceil(mipHeight / 8));
@@ -3876,12 +3918,27 @@ export class Renderer {
   }
 
   render(camera: FlyCamera, viewProj: Mat4, timeSeconds: number): RendererStats {
+    this.frameGraph.beginFrame();
+    // Declare the compatibility graph in submission order so the summary keeps a
+    // stable shape even on frames where an optional pass does not run.
+    this.frameGraph.declare('setup-update', 'cpu', false);
+    this.frameGraph.declare('terrain-cull', 'compute', false);
+    this.frameGraph.declare('shadow-directional', 'render', true);
+    this.frameGraph.declare('main-forward', 'render', false);
+    this.frameGraph.declare('depth-pyramid', 'compute', false);
+
+    // Shadows are active when the setting is on AND the optional shadow pass is
+    // not force-disabled by a query override. Compute before the shadow uniform
+    // write so the in-shader shadow-sample flag matches what the pass renders.
+    const runShadows = this.settings.shadowsEnabled && this.frameGraph.isEnabled('shadow-directional');
+
     this.resize();
     this.writeUniforms(camera, viewProj, timeSeconds);
-    this.writeShadowUniforms(camera);
+    this.writeShadowUniforms(camera, runShadows);
     if (this.settings.farTerrainEnabled) this.updateFarTerrain(camera.position, timeSeconds);
     if (this.settings.waterEnabled) this.updateWater(camera.position);
     this.uploadRing.flush();
+    this.frameGraph.markRan('setup-update', 'cpu', false);
 
     let terrainTriangles = 0;
     let farTerrainTriangles = 0;
@@ -3929,7 +3986,10 @@ export class Renderer {
       if (terrainArenaReplaySlots > 0 && this.terrainArena.compactIndirectBuffer) {
         encoder.clearBuffer(this.terrainArena.compactIndirectBuffer, 0, roundUp4(terrainArenaReplaySlots * INDIRECT_INDEXED_ARGS_BYTES));
       }
-      const computePass = encoder.beginComputePass({ label: 'terrain arena compact cull pass' });
+      const computePass = encoder.beginComputePass({
+        label: 'terrain arena compact cull pass',
+        timestampWrites: this.frameGraph.timed('terrain-cull', 'compute', false),
+      });
       computePass.setPipeline(this.terrainArenaCullPipeline);
       computePass.setBindGroup(0, this.terrainArena.createBindGroup());
       if (this.depthPyramid) computePass.setBindGroup(1, this.depthPyramid.clusterCullBindGroup);
@@ -3984,7 +4044,7 @@ export class Renderer {
 
     let shadowVegetationBuffer: GPUBuffer | null = null;
     let shadowVegetationInstances = 0;
-    if (this.settings.shadowsEnabled && this.settings.vegetationEnabled) {
+    if (runShadows && this.settings.vegetationEnabled) {
       // Gather shadow casters from the same camera-centered near-veg disc the
       // colour pass renders, so the lobe trees we no longer draw don't cast
       // phantom shadows into view. Light-box test then keeps off-screen-but-
@@ -4002,7 +4062,7 @@ export class Renderer {
       shadowVegetationInstances = shadowBatch.instanceCount;
     }
 
-    if (this.settings.shadowsEnabled) {
+    if (runShadows) {
       const shadowPass = encoder.beginRenderPass({
         label: 'shadow caster pass',
         colorAttachments: [],
@@ -4012,6 +4072,7 @@ export class Renderer {
           depthLoadOp: 'clear',
           depthStoreOp: 'store',
         },
+        timestampWrites: this.frameGraph.timed('shadow-directional', 'render', true),
       });
       shadowPass.setBindGroup(0, this.shadowCasterBindGroup);
       if (
@@ -4063,6 +4124,7 @@ export class Renderer {
         depthLoadOp: 'clear',
         depthStoreOp: 'store',
       },
+      timestampWrites: this.frameGraph.timed('main-forward', 'render', false),
     });
 
     pass.setBindGroup(0, this.uniformBindGroup);
@@ -4137,7 +4199,9 @@ export class Renderer {
 
     pass.end();
     this.encodeDepthPyramid(encoder, viewProj);
+    this.frameGraph.resolve(encoder);
     this.device.queue.submit([encoder.finish()]);
+    this.frameGraph.readback();
     if (copyHiZCounters) this.scheduleHiZOcclusionReadback();
 
     if (this.settings.nearTerrainEnabled) {
@@ -4176,6 +4240,7 @@ export class Renderer {
       hiZOcclusionCulledClusters: this.hiZOcclusion.culled,
       hiZOcclusionTestedBatches: this.hiZOcclusion.tested,
       hiZOcclusionCulledBatches: this.hiZOcclusion.culled,
+      renderGraph: this.frameGraph.summary(),
     };
     return this.stats;
   }
