@@ -1309,6 +1309,15 @@ const SCENE_WGSL = `struct Scene {
 };
 @group(0) @binding(0) var<uniform> scene: Scene;`;
 
+// Shared pure-helper fragment (shader-library Upgrade 2). The shared-helper slot
+// each visible shader interpolates as ${WGSL_HELPERS}; `saturate` is its first
+// member (was duplicated identically in the terrain and sky shaders). Helpers
+// that intentionally differ per shader — tone_map (sky uses a softer curve),
+// apply_atmosphere, sample_sun_shadow — are deliberately NOT shared here.
+const WGSL_HELPERS = `fn saturate(x: f32) -> f32 {
+  return clamp(x, 0.0, 1.0);
+}`;
+
 const TERRAIN_SHADER = /* wgsl */`
 ${SCENE_WGSL}
 
@@ -1561,9 +1570,7 @@ fn material_mask_debug_color(m: vec4<f32>) -> vec3<f32> {
   return vec3<f32>(m.y, m.z, m.w);
 }
 
-fn saturate(x: f32) -> f32 {
-  return clamp(x, 0.0, 1.0);
-}
+${WGSL_HELPERS}
 
 fn tone_map(color: vec3<f32>) -> vec3<f32> {
   let exposed = max(color * max(scene.visual.x, 0.01), vec3<f32>(0.0));
@@ -1730,9 +1737,7 @@ fn vs_main(@builtin(vertex_index) vertexIndex: u32) -> VertexOut {
   return out;
 }
 
-fn saturate(x: f32) -> f32 {
-  return clamp(x, 0.0, 1.0);
-}
+${WGSL_HELPERS}
 
 fn hash21(p: vec2<f32>) -> f32 {
   let q = fract(vec2<f32>(dot(p, vec2<f32>(127.1, 311.7)), dot(p, vec2<f32>(269.5, 183.3))));
