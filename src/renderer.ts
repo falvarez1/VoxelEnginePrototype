@@ -1353,6 +1353,53 @@ fn fs_main(input: VOut) -> @location(0) vec4<f32> {
   return textureSampleLevel(srcTex, srcSampler, input.uv, 0.0);
 }`;
 
+// Deferred lighting pass (Photon Upgrade 3). Reads the G-buffer (albedo, world
+// normal + AO) and computes lighting per screen pixel, writing the lit image to
+// the swapchain. This first version is a self-contained directional + sky-
+// ambient model (no noise/atmosphere/shadows yet) so the deferred pipeline works
+// end-to-end without the large shared-lighting extraction; matching the forward
+// cinematic chain (apply_atmosphere, cinematic grade, shadows) is a follow-up.
+const DEFERRED_LIGHT_SHADER = /* wgsl */`
+${SCENE_WGSL}
+@group(0) @binding(1) var albedoTex: texture_2d<f32>;
+@group(0) @binding(2) var normalTex: texture_2d<f32>;
+@group(0) @binding(3) var gbSampler: sampler;
+${WGSL_HELPERS}
+struct VOut {
+  @builtin(position) clip: vec4<f32>,
+  @location(0) uv: vec2<f32>,
+};
+@vertex
+fn vs_main(@builtin(vertex_index) vid: u32) -> VOut {
+  var pos = array<vec2<f32>, 3>(vec2<f32>(-1.0, -1.0), vec2<f32>(3.0, -1.0), vec2<f32>(-1.0, 3.0));
+  let xy = pos[vid];
+  var out: VOut;
+  out.clip = vec4<f32>(xy, 0.0, 1.0);
+  out.uv = vec2<f32>(xy.x * 0.5 + 0.5, 1.0 - (xy.y * 0.5 + 0.5));
+  return out;
+}
+@fragment
+fn fs_main(input: VOut) -> @location(0) vec4<f32> {
+  let albedoSample = textureSampleLevel(albedoTex, gbSampler, input.uv, 0.0);
+  let normalSample = textureSampleLevel(normalTex, gbSampler, input.uv, 0.0);
+  // Empty G-buffer (no geometry rasterized) -> leave background dark; sky comes
+  // in a later slice when sky is composited into the deferred path.
+  if (dot(normalSample.xyz, normalSample.xyz) < 0.0001) {
+    return vec4<f32>(0.02, 0.03, 0.05, 1.0);
+  }
+  let albedo = albedoSample.rgb;
+  let n = normalize(normalSample.xyz * 2.0 - vec3<f32>(1.0));
+  let ao = normalSample.w;
+  let sunDir = normalize(scene.sun.xyz);
+  let ndl = saturate(dot(n, sunDir));
+  let skyAmbient = vec3<f32>(0.42, 0.52, 0.64);
+  let sunColor = vec3<f32>(1.04, 0.94, 0.78);
+  let lit = albedo * (skyAmbient * 0.36 + sunColor * (ndl * 0.96)) * (0.42 + ao * 0.58);
+  let exposed = max(lit * max(scene.visual.x, 0.01), vec3<f32>(0.0));
+  let mapped = exposed / (exposed + vec3<f32>(1.0));
+  return vec4<f32>(pow(clamp(mapped, vec3<f32>(0.0), vec3<f32>(1.0)), vec3<f32>(1.0 / 2.2)), 1.0);
+}`;
+
 const TERRAIN_SHADER = /* wgsl */`
 ${SCENE_WGSL}
 
@@ -2585,6 +2632,8 @@ export class Renderer {
   compositePipeline!: GPURenderPipeline;
   compositeBindGroupLayout!: GPUBindGroupLayout;
   compositeSampler!: GPUSampler;
+  deferredLightPipeline!: GPURenderPipeline;
+  deferredLightBindGroupLayout!: GPUBindGroupLayout;
   shadowCasterPipeline!: GPURenderPipeline;
   shadowVegetationCasterPipeline!: GPURenderPipeline;
   shadowCasterBindGroupLayout!: GPUBindGroupLayout;
@@ -2992,6 +3041,27 @@ export class Renderer {
       layout: this.device.createPipelineLayout({ bindGroupLayouts: [this.compositeBindGroupLayout] }),
       vertex: { module: compositeModule, entryPoint: 'vs_main' },
       fragment: { module: compositeModule, entryPoint: 'fs_main', targets: [{ format: this.format }] },
+      primitive: { topology: 'triangle-list', cullMode: 'none' },
+    });
+
+    // Deferred lighting pipeline (reads G-buffer albedo + normal, writes lit
+    // colour to the swapchain). Bind group: scene uniform + 2 G-buffer textures
+    // + sampler.
+    const deferredLightModule = this.createShaderModuleChecked('deferred lighting shader', DEFERRED_LIGHT_SHADER);
+    this.deferredLightBindGroupLayout = this.device.createBindGroupLayout({
+      label: 'deferred light bind group layout',
+      entries: [
+        { binding: 0, visibility: GPUShaderStage.FRAGMENT, buffer: { type: 'uniform' } },
+        { binding: 1, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'float' } },
+        { binding: 2, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'float' } },
+        { binding: 3, visibility: GPUShaderStage.FRAGMENT, sampler: { type: 'filtering' } },
+      ],
+    });
+    this.deferredLightPipeline = this.device.createRenderPipeline({
+      label: 'deferred lighting pipeline',
+      layout: this.device.createPipelineLayout({ bindGroupLayouts: [this.deferredLightBindGroupLayout] }),
+      vertex: { module: deferredLightModule, entryPoint: 'vs_main' },
+      fragment: { module: deferredLightModule, entryPoint: 'fs_main', targets: [{ format: this.format }] },
       primitive: { topology: 'triangle-list', cullMode: 'none' },
     });
 
@@ -4277,22 +4347,27 @@ export class Renderer {
           }
         }
         gpass.end();
-        const compositeBindGroup = this.device.createBindGroup({
-          layout: this.compositeBindGroupLayout,
+        // Deferred lighting pass: light the G-buffer (albedo + normal/AO) into
+        // the swapchain. Bind group recreated per-frame because the G-buffer
+        // views change on resize.
+        const lightBindGroup = this.device.createBindGroup({
+          layout: this.deferredLightBindGroupLayout,
           entries: [
-            { binding: 0, resource: albedoView },
-            { binding: 1, resource: this.compositeSampler },
+            { binding: 0, resource: { buffer: this.uniformBuffer } },
+            { binding: 1, resource: albedoView },
+            { binding: 2, resource: normalView },
+            { binding: 3, resource: this.compositeSampler },
           ],
         });
-        const cpass = encoder.beginRenderPass({
-          label: 'deferred composite pass',
+        const lpass = encoder.beginRenderPass({
+          label: 'deferred lighting pass',
           colorAttachments: [{ view: colorView, clearValue: { r: 0.02, g: 0.03, b: 0.05, a: 1 }, loadOp: 'clear', storeOp: 'store' }],
-          timestampWrites: this.frameGraph.timed('deferred-composite', 'render', false),
+          timestampWrites: this.frameGraph.timed('deferred-lighting', 'render', false),
         });
-        cpass.setPipeline(this.compositePipeline);
-        cpass.setBindGroup(0, compositeBindGroup);
-        cpass.draw(3);
-        cpass.end();
+        lpass.setPipeline(this.deferredLightPipeline);
+        lpass.setBindGroup(0, lightBindGroup);
+        lpass.draw(3);
+        lpass.end();
       }
     } else {
     const pass = encoder.beginRenderPass({
