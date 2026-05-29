@@ -1507,6 +1507,18 @@ fn material_color(m: vec4<f32>, world: vec3<f32>, n: vec3<f32>) -> vec3<f32> {
   let soil = vec3<f32>(0.142, 0.132, 0.080) + d.fine * vec3<f32>(0.010, 0.009, 0.006);
   var color = mix(grass, soil, dirtMask * 0.045);
   color = mix(color, vec3<f32>(0.050, 0.108, 0.074), wetness * 0.14);
+  // Dry, sun-bleached grass on warm, well-drained upper slopes (plan Phase 4:
+  // "dry grass/yellow-green on sun-facing ridges"). Drives the muted golden
+  // cinematic-alpine breakup the reference has, while wet valleys stay lush
+  // green. All world-space (no screen swimming); scaled by materialDetail
+  // (scene.params.z) so it can be dialed down, and suppressed under forest
+  // stipple and snow so it only tints open grassland.
+  let detailAmt = saturate(scene.params.z);
+  let warmPatch = smoothstep(0.05, 0.78, d.large);
+  let altDry = smoothstep(70.0, 210.0, world.y);
+  let dryness = saturate((1.0 - wetness) * 0.55 + warmPatch * 0.45 + altDry * 0.22 - 0.30);
+  let dryGrass = vec3<f32>(0.40, 0.38, 0.19);
+  color = mix(color, dryGrass, dryness * 0.40 * detailAmt * (1.0 - forestStipple) * saturate(1.0 - snowDust * 2.0));
   color = mix(color, vec3<f32>(0.86, 0.92, 0.90), snowDust * 0.18);
   return color;
 }
