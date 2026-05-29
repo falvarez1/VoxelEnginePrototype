@@ -35,6 +35,7 @@ export interface RenderPassReport {
 }
 
 export interface FrameGraphSummary {
+  mode: string;
   timingAvailable: boolean;
   passes: RenderPassReport[];
 }
@@ -74,6 +75,8 @@ export class FrameGraph {
   private readonly passes = new Map<string, PassState>();
   private readonly order: string[] = [];
 
+  // Reporting-only label for the active render-graph mode ('compat'|'deferred').
+  mode = 'compat';
   private timingAvailable = false;
   private querySet: GPUQuerySet | null = null;
   private resolveBuffer: GPUBuffer | null = null;
@@ -224,6 +227,7 @@ export class FrameGraph {
 
   summary(): FrameGraphSummary {
     return {
+      mode: this.mode,
       timingAvailable: this.timingAvailable,
       passes: this.order.map(name => {
         const pass = this.passes.get(name)!;

@@ -351,6 +351,7 @@ export interface RenderGraphPassReport {
 }
 
 export interface RenderGraphSummary {
+  mode: string;
   timingAvailable: boolean;
   passes: RenderGraphPassReport[];
 }

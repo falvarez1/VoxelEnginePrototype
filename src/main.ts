@@ -1918,7 +1918,7 @@ function formatRenderGraph(graph: RenderGraphSummary): string {
     return `${pass.name}${ms}`;
   });
   const note = graph.timingAvailable ? '' : ' (no timestamp-query)';
-  return `${parts.join(' · ')}${note}`;
+  return `[${graph.mode}] ${parts.join(' · ')}${note}`;
 }
 
 function formatWorldgenProbe(probe: WorldgenProbe): string {

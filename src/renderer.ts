@@ -39,6 +39,17 @@ function parseRenderGraphOverrides(): Record<string, boolean> {
   return overrides;
 }
 
+export type RenderGraphMode = 'compat' | 'deferred';
+
+// Select the render-graph mode from `?renderGraph=compat|deferred`. Defaults to
+// the compatibility forward path; `deferred` opts into the work-in-progress
+// G-buffer/deferred terrain path (Photon Upgrade 3).
+function parseRenderGraphMode(): RenderGraphMode {
+  if (typeof location === 'undefined' || !location.search) return 'compat';
+  const value = new URLSearchParams(location.search).get('renderGraph');
+  return value === 'deferred' ? 'deferred' : 'compat';
+}
+
 const FAR_TERRAIN_RINGS = [
   { inner: 120, outer: 1152, step: 16 },
   { inner: 1152, outer: 2688, step: 32 },
@@ -2558,6 +2569,10 @@ export class Renderer {
   // one resize path. The depthTexture / shadowDepth* fields below alias its
   // handles so existing pass code is unchanged (Photon-class Upgrade 1).
   renderTargets!: RenderTargets;
+  // Render-graph mode (Photon Upgrade 3). 'compat' = the forward path (default);
+  // 'deferred' = the work-in-progress G-buffer/deferred terrain path. Selected
+  // once at init from the ?renderGraph= query flag.
+  renderGraphMode: RenderGraphMode = 'compat';
   uploadRing!: GpuUploadRing;
   terrainArena!: TerrainGpuArena;
   treeVertexBuffer!: GPUBuffer;
@@ -2618,7 +2633,7 @@ export class Renderer {
     hiZOcclusionCulledClusters: 0,
     hiZOcclusionTestedBatches: 0,
     hiZOcclusionCulledBatches: 0,
-    renderGraph: { timingAvailable: false, passes: [] },
+    renderGraph: { mode: 'compat', timingAvailable: false, passes: [] },
   };
   settings: RendererSettings = { ...DEFAULT_RENDERER_SETTINGS };
   capabilities: RuntimeCapabilities = {
@@ -2653,10 +2668,13 @@ export class Renderer {
     this.capabilities.multiDrawIndirect = this.device.features.has(MULTI_DRAW_INDIRECT_FEATURE);
     this.capabilities.timestampQuery = this.device.features.has('timestamp-query');
     this.frameGraph = new FrameGraph(this.device, this.capabilities.timestampQuery, parseRenderGraphOverrides());
+    this.renderGraphMode = parseRenderGraphMode();
+    this.frameGraph.mode = this.renderGraphMode;
     this.renderTargets = new RenderTargets(this.device, {
       depthFormat: DEPTH_FORMAT,
       shadowFormat: DEPTH_FORMAT,
       shadowSize: SHADOW_MAP_SIZE,
+      deferred: this.renderGraphMode === 'deferred',
     });
     // Alias the registry's shadow handles so the bind groups/passes below keep
     // using this.shadowDepth* unchanged.

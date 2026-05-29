@@ -15,6 +15,12 @@ export interface RenderTargetsConfig {
   depthFormat: GPUTextureFormat;
   shadowFormat: GPUTextureFormat;
   shadowSize: number;
+  // When true, also allocate the canvas-sized G-buffer attachments used by the
+  // deferred terrain path (renderGraph=deferred). Off for the default compat
+  // path so normal sessions pay no extra GPU memory.
+  deferred?: boolean;
+  gbufferAlbedoFormat?: GPUTextureFormat;
+  gbufferNormalFormat?: GPUTextureFormat;
 }
 
 export class RenderTargets {
@@ -26,6 +32,12 @@ export class RenderTargets {
   private depthTex: GPUTexture | null = null;
   private readonly shadowTex: GPUTexture;
   private readonly shadowView: GPUTextureView;
+  // Deferred G-buffer attachments (canvas-sized, allocated only when deferred).
+  readonly deferred: boolean;
+  readonly gbufferAlbedoFormat: GPUTextureFormat;
+  readonly gbufferNormalFormat: GPUTextureFormat;
+  private gbufferAlbedoTex: GPUTexture | null = null;
+  private gbufferNormalTex: GPUTexture | null = null;
   width = 0;
   height = 0;
 
@@ -34,6 +46,9 @@ export class RenderTargets {
     this.depthFormat = config.depthFormat;
     this.shadowFormat = config.shadowFormat;
     this.shadowSize = config.shadowSize;
+    this.deferred = config.deferred ?? false;
+    this.gbufferAlbedoFormat = config.gbufferAlbedoFormat ?? 'rgba8unorm';
+    this.gbufferNormalFormat = config.gbufferNormalFormat ?? 'rgba16float';
     // Sun shadow map: fixed resolution, allocated once (does not track canvas).
     this.shadowTex = device.createTexture({
       label: 'sun shadow depth',
@@ -58,16 +73,38 @@ export class RenderTargets {
       format: this.depthFormat,
       usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING,
     });
+    if (this.deferred) {
+      this.gbufferAlbedoTex?.destroy();
+      this.gbufferNormalTex?.destroy();
+      this.gbufferAlbedoTex = this.device.createTexture({
+        label: 'gbuffer albedo',
+        size: [width, height],
+        format: this.gbufferAlbedoFormat,
+        usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING,
+      });
+      this.gbufferNormalTex = this.device.createTexture({
+        label: 'gbuffer normal',
+        size: [width, height],
+        format: this.gbufferNormalFormat,
+        usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING,
+      });
+    }
     return true;
   }
 
   get depthTexture(): GPUTexture | null { return this.depthTex; }
   get shadowDepthTexture(): GPUTexture { return this.shadowTex; }
   get shadowDepthView(): GPUTextureView { return this.shadowView; }
+  get gbufferAlbedoTexture(): GPUTexture | null { return this.gbufferAlbedoTex; }
+  get gbufferNormalTexture(): GPUTexture | null { return this.gbufferNormalTex; }
 
   destroy(): void {
     this.depthTex?.destroy();
     this.depthTex = null;
+    this.gbufferAlbedoTex?.destroy();
+    this.gbufferAlbedoTex = null;
+    this.gbufferNormalTex?.destroy();
+    this.gbufferNormalTex = null;
     this.shadowTex.destroy();
   }
 }
