@@ -87,6 +87,9 @@ export const DEBUG_VIEW_NAMES: Record<string, number> = {
   biomes: 8,
   wetness: 9,
   snow: 10,
+  vegkind: 11,
+  vegetation: 11,
+  vegetationkind: 11,
 };
 
 export const PAINT_MATERIAL_NAMES: Record<string, number> = {

@@ -32,6 +32,10 @@ const FAR_TERRAIN_REBUILD_IDLE_SECONDS = 0.28;
 const FAR_TERRAIN_RECENTER_DISTANCE = FAR_TERRAIN_SNAP * 16;
 const FAR_TERRAIN_CAMERA_MOVE_EPSILON = 0.05;
 const DEBUG_VIEW_SNOW_MASK = 10;
+// Highest debug-view index. 11 = vegetation-kind paint (trunk/shrub/pine/rock),
+// handled in VEGETATION_SHADER fs_main. Keep this in sync with the highest
+// `scene.sun.w` case across the shaders and DEBUG_VIEW_NAMES in console_commands.
+const DEBUG_VIEW_MAX = 11;
 const DEFAULT_RENDERER_SETTINGS: RendererSettings = {
   nearTerrainEnabled: true,
   farTerrainEnabled: true,
@@ -48,6 +52,7 @@ const DEFAULT_RENDERER_SETTINGS: RendererSettings = {
   waterOpacity: 0.93,
   animationSpeed: 1,
   sunDirection: [-0.930, 0.139, -0.339],
+  streamRadius: 11,
 };
 
 interface RenderableChunk {
@@ -176,6 +181,10 @@ const SCENIC_NEAR_FOREST_STEP = 28;
 const SCENIC_FOREST_RADIUS = 4200;
 const SCENIC_FOREST_INNER_CLEARING = 36;
 const SCENIC_NEAR_FOREST_INNER_CLEARING = 44;
+// Must match native/voxel_core.c + main.ts CHUNK_WORLD_SIZE (32 cells * 1m). Used
+// to derive the camera-centered near-vegetation render disc from the stream radius.
+const CHUNK_WORLD_SIZE = 32;
+const NEAR_VEG_MIN_RENDER_RADIUS = 160;
 const SCENIC_REFERENCE_SUN_DIR: [number, number, number] = [-0.930, 0.139, -0.339];
 
 interface UploadRingCopy {
@@ -1200,9 +1209,13 @@ function buildScenicVegetationInstances(cameraPosition: Vec3, preserveNearTerrai
   // streamed near vegetation actually reaches (nearClearingRadius), not just the
   // tiny fixed 44m clearing. Otherwise both layers render trees in the near
   // footprint and stack into a doubled "blob" of overlapping meshes.
-  const innerClearing = preserveNearTerrainVegetation
-    ? Math.max(SCENIC_NEAR_FOREST_INNER_CLEARING, nearClearingRadius)
-    : SCENIC_FOREST_INNER_CLEARING;
+  // Clear the scenic forest out to the camera-centered near-vegetation disc
+  // (nearClearingRadius) whenever near vegetation is present, regardless of
+  // whether near SDF terrain is on. This is the SAME disc the render loop culls
+  // near veg to, so the two layers hand off cleanly with no gap and no doubled
+  // "blob" of overlapping trees.
+  const baseClearing = preserveNearTerrainVegetation ? SCENIC_NEAR_FOREST_INNER_CLEARING : SCENIC_FOREST_INNER_CLEARING;
+  const innerClearing = Math.max(baseClearing, nearClearingRadius);
   const densityScale = preserveNearTerrainVegetation ? 0.84 : 0.94;
   const minGX = Math.floor((cameraPosition[0] - SCENIC_FOREST_RADIUS) / step);
   const maxGX = Math.ceil((cameraPosition[0] + SCENIC_FOREST_RADIUS) / step);
@@ -2272,6 +2285,14 @@ fn vs_main(input: VertexIn) -> VertexOut {
 }
 @fragment
 fn fs_main(input: VertexOut) -> @location(0) vec4<f32> {
+  // Vegetation-kind debug view (debug 11 / "vegkind"): trunk=brown, shrub=red,
+  // pine=green, rock=blue, so anomalous tree clusters stand out at a glance.
+  if (i32(round(scene.sun.w)) == 11) {
+    if (input.part < 0.5) { return vec4<f32>(0.45, 0.30, 0.16, 1.0); }
+    if (input.kind < 0.5) { return vec4<f32>(0.92, 0.18, 0.18, 1.0); }
+    if (input.kind >= 1.5) { return vec4<f32>(0.18, 0.42, 0.96, 1.0); }
+    return vec4<f32>(0.20, 0.86, 0.30, 1.0);
+  }
   let n = normalize(input.normal);
   let sunDir = normalize(scene.sun.xyz);
   let diffuse = max(dot(n, sunDir), 0.0);
@@ -2992,6 +3013,7 @@ export class Renderer {
 
   updateSettings(nextSettings: Partial<RendererSettings> = {}): void {
     const previousNearTerrainEnabled = this.settings.nearTerrainEnabled;
+    const previousStreamRadius = this.settings.streamRadius;
     this.settings = {
       ...this.settings,
       ...nextSettings,
@@ -3002,14 +3024,20 @@ export class Renderer {
       skyEnabled: nextSettings.skyEnabled ?? this.settings.skyEnabled,
       cinematicLighting: nextSettings.cinematicLighting ?? this.settings.cinematicLighting,
       shadowsEnabled: nextSettings.shadowsEnabled ?? this.settings.shadowsEnabled,
-      debugView: clamp(Number(nextSettings.debugView ?? this.settings.debugView), 0, DEBUG_VIEW_SNOW_MASK),
+      debugView: clamp(Number(nextSettings.debugView ?? this.settings.debugView), 0, DEBUG_VIEW_MAX),
       waterOpacity: clamp(Number(nextSettings.waterOpacity ?? this.settings.waterOpacity), 0, 1),
       animationSpeed: clamp(Number(nextSettings.animationSpeed ?? this.settings.animationSpeed), 0, 4),
     };
-    if (
-      nextSettings.nearTerrainEnabled !== undefined
-      && nextSettings.nearTerrainEnabled !== previousNearTerrainEnabled
-    ) {
+    // Rebuild far terrain (and with it the scenic vegetation clearing) when near
+    // terrain toggles, or when the stream radius changes: the scenic forest is
+    // cleared out to a disc keyed to streamRadius, and that clearing must track
+    // the render-loop near-veg disc or the two layers gap/overlap until the next
+    // far-terrain recenter.
+    const streamRadiusChanged = nextSettings.streamRadius !== undefined
+      && nextSettings.streamRadius !== previousStreamRadius;
+    const nearTerrainToggled = nextSettings.nearTerrainEnabled !== undefined
+      && nextSettings.nearTerrainEnabled !== previousNearTerrainEnabled;
+    if (nearTerrainToggled || streamRadiusChanged) {
       this.destroyBuffer(this.farTerrain?.vertexBuffer);
       this.destroyBuffer(this.farTerrain?.indexBuffer);
       this.destroyBuffer(this.farTerrain?.originBuffer);
@@ -3181,19 +3209,23 @@ export class Renderer {
     });
   }
 
+  // Stable, camera-centered radius (world metres) of the near-vegetation disc.
+  // Derived from the configured stream radius rather than the actual loaded
+  // patch reach: the view-focus stream anchor lobes near-veg chunks far toward
+  // the look direction, so "max patch reach" balloons and swings with the
+  // camera. A disc keyed to the stream radius is rotation-invariant, which is
+  // what keeps the near forest from appearing to follow the camera perspective.
+  private nearVegRenderRadius(): number {
+    return Math.max(NEAR_VEG_MIN_RENDER_RADIUS, this.settings.streamRadius * CHUNK_WORLD_SIZE);
+  }
+
   private updateScenicVegetation(cameraPosition: Vec3): void {
-    // Derive how far the streamed near vegetation reaches from the loaded patch
-    // bounds, so the scenic far-forest can clear that footprint and not double
-    // up on top of it. Self-tracks any stream radius / LOD setting.
-    let nearClearingRadius = 0;
-    if (this.settings.nearTerrainEnabled) {
-      for (const patch of this.vegetation.values()) {
-        const dx = patch.bounds.center[0] - cameraPosition[0];
-        const dz = patch.bounds.center[2] - cameraPosition[2];
-        const reach = Math.hypot(dx, dz) + patch.bounds.radius;
-        if (reach > nearClearingRadius) nearClearingRadius = reach;
-      }
-    }
+    // Clear the scenic far-forest out to the near-vegetation disc so the two
+    // layers don't stack into a doubled "blob". The render loop culls near veg
+    // to this same disc, so the clearing must match it (not the lobed loaded
+    // footprint). Applies whenever near veg exists, even with near SDF off
+    // (near veg still renders, snapped to the scenic terrain height).
+    const nearClearingRadius = this.vegetation.size > 0 ? this.nearVegRenderRadius() : 0;
     const instances = buildScenicVegetationInstances(cameraPosition, this.settings.nearTerrainEnabled, nearClearingRadius);
     if (instances.length <= 0) {
       this.scenicVegetation = null;
@@ -3898,7 +3930,22 @@ export class Renderer {
     const visibleVegetation: VegetationPatch[] = [];
     let vegetationBatchBuffer: GPUBuffer | null = null;
     if (this.settings.vegetationEnabled) {
+      // Cull near-veg patches to a camera-centered disc BEFORE the frustum test.
+      // The view-focus stream anchor loads near-veg chunks in a lobe toward the
+      // look target (hundreds of metres ahead), well beyond the symmetric near
+      // ring; rendering that lobe makes the near forest appear to follow the
+      // camera and pop in/out as it rotates. The disc (radius = stream radius)
+      // is rotation-invariant, and matches the scenic forest clearing so the two
+      // layers hand off without a gap. A patch-radius margin keeps the boundary
+      // covered. Scenic veg (one big patch) is exempt — it fills the distance.
+      const nearVegRadius = this.nearVegRenderRadius();
       for (const patch of this.vegetation.values()) {
+        const dx = patch.bounds.center[0] - camera.position[0];
+        const dz = patch.bounds.center[2] - camera.position[2];
+        if (Math.hypot(dx, dz) - patch.bounds.radius > nearVegRadius) {
+          culledVegetationPatches++;
+          continue;
+        }
         if (!sphereInFrustum(patch.bounds, frustumPlanes)) {
           culledVegetationPatches++;
           continue;
@@ -3926,8 +3973,16 @@ export class Renderer {
     let shadowVegetationBuffer: GPUBuffer | null = null;
     let shadowVegetationInstances = 0;
     if (this.settings.shadowsEnabled && this.settings.vegetationEnabled) {
+      // Gather shadow casters from the same camera-centered near-veg disc the
+      // colour pass renders, so the lobe trees we no longer draw don't cast
+      // phantom shadows into view. Light-box test then keeps off-screen-but-
+      // shadowing casters within that disc.
+      const nearVegRadius = this.nearVegRenderRadius();
       const shadowPatches: VegetationPatch[] = [];
       for (const patch of this.vegetation.values()) {
+        const dx = patch.bounds.center[0] - camera.position[0];
+        const dz = patch.bounds.center[2] - camera.position[2];
+        if (Math.hypot(dx, dz) - patch.bounds.radius > nearVegRadius) continue;
         if (this.patchInLightBox(patch.bounds)) shadowPatches.push(patch);
       }
       const shadowBatch = this.updateShadowVegetationBatch(shadowPatches);

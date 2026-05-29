@@ -523,6 +523,9 @@ const DEBUG_VIEW_DENSITY_SLICE = 5;
 const DEBUG_VIEW_DIRTY_REGIONS = 6;
 const DEBUG_VIEW_MATERIAL_MASKS = 7;
 const DEBUG_VIEW_SNOW_MASK = 10;
+// 11 = vegetation-kind paint (see VEGETATION_SHADER fs_main / DEBUG_VIEW_NAMES).
+// Highest valid debug-view index; keep in sync with renderer's DEBUG_VIEW_MAX.
+const DEBUG_VIEW_VEG_KIND = 11;
 const DENSITY_AXIS_X = 0;
 const DENSITY_AXIS_Y = 1;
 const DENSITY_AXIS_Z = 2;
@@ -1000,7 +1003,7 @@ function sanitizeEngineSettings(raw: Partial<EngineSettings> = {}): EngineSettin
     skyEnabled: raw.skyEnabled !== false,
     cinematicLighting: raw.cinematicLighting !== false,
     shadowsEnabled: raw.shadowsEnabled === true,
-    debugView: clampNumber(raw.debugView, 0, DEBUG_VIEW_SNOW_MASK, DEFAULT_ENGINE_SETTINGS.debugView),
+    debugView: clampNumber(raw.debugView, 0, DEBUG_VIEW_VEG_KIND, DEFAULT_ENGINE_SETTINGS.debugView),
     waterOpacity: clampNumber(migratedWaterOpacity, 0.15, 1, DEFAULT_ENGINE_SETTINGS.waterOpacity),
     animationSpeed: clampNumber(raw.animationSpeed, 0, 2, DEFAULT_ENGINE_SETTINGS.animationSpeed),
     cameraSpeed: clampNumber(raw.cameraSpeed, 8, 150, DEFAULT_ENGINE_SETTINGS.cameraSpeed),
@@ -1415,6 +1418,7 @@ function applyEngineSettings(settings: EngineSettings, camera: FlyCamera, render
     waterOpacity: settings.waterOpacity,
     animationSpeed: settings.animationSpeed,
     sunDirection: sunDirectionFromSettings(settings),
+    streamRadius: settings.streamRadius,
   });
 }
 

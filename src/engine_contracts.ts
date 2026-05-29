@@ -308,6 +308,9 @@ export interface RendererSettings {
   waterOpacity: number;
   animationSpeed: number;
   sunDirection: [number, number, number];
+  // Chunk stream radius (chunks). The renderer uses it to size the camera-centered
+  // near-vegetation render disc and the matching scenic-forest clearing.
+  streamRadius: number;
 }
 
 export interface RendererStats {
