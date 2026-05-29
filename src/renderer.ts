@@ -1293,8 +1293,13 @@ function buildScenicVegetationInstances(cameraPosition: Vec3, preserveNearTerrai
   return new Float32Array(values);
 }
 
-const TERRAIN_SHADER = /* wgsl */`
-struct Scene {
+// Shared WGSL fragment (shader-library Upgrade 2, first slice): the Scene
+// uniform struct + its group(0) binding were duplicated byte-for-byte across the
+// terrain, sky, water, beacon, and vegetation shaders. Centralizing it here means
+// uniform-layout changes (e.g. the camera-relative viewProjRel field) touch one
+// place instead of five — directly retiring the plan's "WGSL struct mismatch
+// across shaders" risk. Interpolated as ${SCENE_WGSL}; emitted WGSL is identical.
+const SCENE_WGSL = `struct Scene {
   viewProj: mat4x4<f32>,
   camera: vec4<f32>,
   sun: vec4<f32>,
@@ -1302,7 +1307,10 @@ struct Scene {
   visual: vec4<f32>,
   viewProjRel: mat4x4<f32>,
 };
-@group(0) @binding(0) var<uniform> scene: Scene;
+@group(0) @binding(0) var<uniform> scene: Scene;`;
+
+const TERRAIN_SHADER = /* wgsl */`
+${SCENE_WGSL}
 
 struct ShadowData {
   lightViewProj: mat4x4<f32>,
@@ -1705,15 +1713,7 @@ fn fs_main(input: VertexOut) -> @location(0) vec4<f32> {
 `;
 
 const SKY_SHADER = /* wgsl */`
-struct Scene {
-  viewProj: mat4x4<f32>,
-  camera: vec4<f32>,
-  sun: vec4<f32>,
-  params: vec4<f32>,
-  visual: vec4<f32>,
-  viewProjRel: mat4x4<f32>,
-};
-@group(0) @binding(0) var<uniform> scene: Scene;
+${SCENE_WGSL}
 
 struct VertexOut {
   @builtin(position) clip: vec4<f32>,
@@ -2088,15 +2088,7 @@ fn cs_main(@builtin(global_invocation_id) id: vec3<u32>) {
 `;
 
 const WATER_SHADER = /* wgsl */`
-struct Scene {
-  viewProj: mat4x4<f32>,
-  camera: vec4<f32>,
-  sun: vec4<f32>,
-  params: vec4<f32>,
-  visual: vec4<f32>,
-  viewProjRel: mat4x4<f32>,
-};
-@group(0) @binding(0) var<uniform> scene: Scene;
+${SCENE_WGSL}
 struct VertexIn {
   @location(0) position: vec3<f32>,
   @location(1) normal: vec3<f32>,
@@ -2189,15 +2181,7 @@ fn fs_main(input: VertexOut) -> @location(0) vec4<f32> {
 `;
 
 const BEACON_SHADER = /* wgsl */`
-struct Scene {
-  viewProj: mat4x4<f32>,
-  camera: vec4<f32>,
-  sun: vec4<f32>,
-  params: vec4<f32>,
-  visual: vec4<f32>,
-  viewProjRel: mat4x4<f32>,
-};
-@group(0) @binding(0) var<uniform> scene: Scene;
+${SCENE_WGSL}
 
 struct VertexIn {
   @location(0) local: vec3<f32>,
@@ -2231,15 +2215,7 @@ fn fs_main(input: VertexOut) -> @location(0) vec4<f32> {
 `;
 
 const VEGETATION_SHADER = /* wgsl */`
-struct Scene {
-  viewProj: mat4x4<f32>,
-  camera: vec4<f32>,
-  sun: vec4<f32>,
-  params: vec4<f32>,
-  visual: vec4<f32>,
-  viewProjRel: mat4x4<f32>,
-};
-@group(0) @binding(0) var<uniform> scene: Scene;
+${SCENE_WGSL}
 
 const VEG_SHRUB_LOD_SQ: f32 = ${VEGETATION_SHRUB_LOD_DISTANCE * VEGETATION_SHRUB_LOD_DISTANCE};
 const VEG_ROCK_LOD_SQ: f32 = ${VEGETATION_ROCK_LOD_DISTANCE * VEGETATION_ROCK_LOD_DISTANCE};
