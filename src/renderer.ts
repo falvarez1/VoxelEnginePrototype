@@ -2518,6 +2518,9 @@ export class Renderer {
   vegetationBatchCapacityBytes = 0;
   vegetationBatchBytes = 0;
   vegetationBatchScratch = new Float32Array(0);
+  // World-anchored scenic pond footprints (set during updateWater) used to cull
+  // vegetation out of ponds so trees don't poke through the water surface.
+  scenicPonds: { cx: number; cz: number; rx: number; rz: number; cos: number; sin: number }[] = [];
   shadowVegetationBatchBuffer: GPUBuffer | null = null;
   shadowVegetationBatchCapacityBytes = 0;
   shadowVegetationBatchScratch = new Float32Array(0);
@@ -3225,17 +3228,46 @@ export class Renderer {
     if (this.vegetationBatchScratch.length < floats) {
       this.vegetationBatchScratch = new Float32Array(floats);
     }
+    const hasPonds = this.scenicPonds.length > 0;
     let offset = 0;
     for (const patch of visiblePatches) {
+      const inst = patch.instances;
       const usable = patch.instanceCount * VEGETATION_INSTANCE_FLOATS;
-      this.vegetationBatchScratch.set(patch.instances.subarray(0, usable), offset);
-      offset += usable;
+      if (!hasPonds) {
+        this.vegetationBatchScratch.set(inst.subarray(0, usable), offset);
+        offset += usable;
+        continue;
+      }
+      // Cull instances that fall inside a scenic pond footprint so trees don't
+      // stand in the water (instance x,z are at offsets 0 and 2).
+      for (let k = 0; k < usable; k += VEGETATION_INSTANCE_FLOATS) {
+        if (this.instanceInPond(inst[k], inst[k + 2])) continue;
+        this.vegetationBatchScratch.set(inst.subarray(k, k + VEGETATION_INSTANCE_FLOATS), offset);
+        offset += VEGETATION_INSTANCE_FLOATS;
+      }
     }
-    const batch = this.vegetationBatchScratch.subarray(0, floats);
-    const buffer = this.ensureVegetationBatchCapacity(batch.byteLength);
-    this.device.queue.writeBuffer(buffer, 0, batch);
+    const renderedInstances = offset / VEGETATION_INSTANCE_FLOATS;
+    const batch = this.vegetationBatchScratch.subarray(0, offset);
+    const buffer = this.ensureVegetationBatchCapacity(Math.max(4, batch.byteLength));
+    if (batch.byteLength > 0) this.device.queue.writeBuffer(buffer, 0, batch);
     this.vegetationBatchBytes = batch.byteLength;
-    return { buffer, instanceCount: totalInstances, lodCulledInstances: 0 };
+    return { buffer: renderedInstances > 0 ? buffer : null, instanceCount: renderedInstances, lodCulledInstances: totalInstances - renderedInstances };
+  }
+
+  // True if (x,z) lies within a scenic pond footprint (pond-local ellipse test,
+  // with a small margin to cover the rendered edge wobble).
+  private instanceInPond(x: number, z: number): boolean {
+    for (let i = 0; i < this.scenicPonds.length; i++) {
+      const p = this.scenicPonds[i];
+      const dx = x - p.cx;
+      const dz = z - p.cz;
+      const lx = dx * p.cos + dz * p.sin;
+      const lz = -dx * p.sin + dz * p.cos;
+      const nx = lx / p.rx;
+      const nz = lz / p.rz;
+      if (nx * nx + nz * nz < 1.12) return true;
+    }
+    return false;
   }
 
   // True if the patch's bounding sphere may intersect the directional shadow
@@ -3391,6 +3423,8 @@ export class Renderer {
       const edgeRelief = maxLakeGroundY - groundY;
       const waterY = baseWaterY + Math.min(Math.max(edgeRelief, 0), force ? 0.8 : 1.2) * 0.035;
       if (!force && scenicGroundY > SCENIC_WATER_LEVEL + 28.0) return;
+      // Record the rendered footprint so vegetation can be culled out of it.
+      this.scenicPonds.push({ cx: centerX, cz: centerZ, rx: radiusX, rz: radiusZ, cos: c, sin: s });
       const rings = WATER_LAKE_RINGS;
       const sides = WATER_LAKE_SIDES;
       const ringStarts: number[] = [];
@@ -3426,15 +3460,24 @@ export class Renderer {
       }
     };
 
-    const viewSign = cameraPosition[2] >= 240 ? -1 : 1;
-    const leftForegroundPondZ = cameraPosition[2] + viewSign * 360;
-    addLake(scenicRiverCenter(leftForegroundPondZ) - 330, leftForegroundPondZ, 82, 50, true);
-    const foregroundLakeZ = cameraPosition[2] + viewSign * 430;
-    addLake(scenicRiverCenter(foregroundLakeZ) + 76, foregroundLakeZ, 118, 70, true);
-    const sidePondZ = cameraPosition[2] + viewSign * 1080;
-    addLake(scenicRiverCenter(sidePondZ) - 218, sidePondZ, 92, 54, true);
-    const farLakeZ = cameraPosition[2] + viewSign * 1660;
-    addLake(scenicRiverCenter(farLakeZ) + 132, farLakeZ, 140, 80);
+    // World-anchored scenic ponds: deterministic positions keyed to world-Z
+    // slots (not the camera), so they stay put as the camera moves instead of
+    // sliding over the terrain and dropping onto trees. addLake skips ones on
+    // high ground and records the rest so vegetation is culled from them.
+    this.scenicPonds = [];
+    const POND_SPACING = 600;
+    const POND_RANGE_Z = 2100;
+    const firstPondSlot = Math.floor((cameraPosition[2] - POND_RANGE_Z) / POND_SPACING);
+    const lastPondSlot = Math.ceil((cameraPosition[2] + POND_RANGE_Z) / POND_SPACING);
+    for (let slot = firstPondSlot; slot <= lastPondSlot; slot++) {
+      if (valueNoise2(slot * 12.7 + 4.0, 31.0) < 0.50) continue;
+      const pondZ = slot * POND_SPACING + (valueNoise2(slot * 3.1, 7.0) - 0.5) * 260;
+      const lateral = (valueNoise2(slot * 5.3, 19.0) - 0.5) * 540;
+      const pondX = scenicRiverCenter(pondZ) + lateral;
+      const rx = 58 + valueNoise2(slot * 1.7, 23.0) * 92;
+      const rz = 40 + valueNoise2(slot * 2.9, 41.0) * 58;
+      addLake(pondX, pondZ, rx, rz);
+    }
 
     if (!this.settings.nearTerrainEnabled || this.settings.farTerrainEnabled) {
       const addLowlandLake = (z: number, lateral: number, radiusX: number, radiusZ: number): void => {
