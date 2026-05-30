@@ -34,6 +34,7 @@ function parseRenderGraphOverrides(): Record<string, boolean> {
   const aliases: Record<string, string> = {
     'pass.shadow': 'shadow-directional',
     'pass.bloom': 'deferred-bloom',
+    'pass.ssao': 'deferred-ssao',
   };
   for (const [flag, passName] of Object.entries(aliases)) {
     const value = params.get(flag);
@@ -1637,9 +1638,11 @@ fn fs_main(input: VOut) -> @location(0) vec4<f32> {
   }
   lit = lit * (1.0 - forestShadow);
   // Screen-space AO: deepens valley/crease/contact occlusion the coarse vertex
-  // AO misses. A deferred-path effect beyond the forward baseline (Upgrade 5).
-  let ssao = compute_ssao(input.uv, worldSample.xyz, n);
-  lit = lit * ssao;
+  // AO misses. A deferred-path effect beyond the forward baseline (Upgrade 5),
+  // gated by shadow.params.w (the pass.ssao toggle).
+  if (shadow.params.w > 0.5) {
+    lit = lit * compute_ssao(input.uv, worldSample.xyz, n);
+  }
   let hazed = apply_atmosphere(lit, world);
   return vec4<f32>(tone_map(hazed), 1.0);
 }`;
@@ -4250,7 +4253,7 @@ export class Renderer {
     this.device.queue.writeBuffer(this.uniformBuffer, 0, data);
   }
 
-  private writeShadowUniforms(camera: FlyCamera, active: boolean): void {
+  private writeShadowUniforms(camera: FlyCamera, active: boolean, ssaoActive = false): void {
     const sd = this.settings.sunDirection ?? DEFAULT_RENDERER_SETTINGS.sunDirection;
     const len = Math.hypot(sd[0], sd[1], sd[2]) || 1;
     const lx = sd[0] / len, ly = sd[1] / len, lz = sd[2] / len;
@@ -4281,7 +4284,7 @@ export class Renderer {
     data[16] = active ? 1 : 0;
     data[17] = 1 / SHADOW_MAP_SIZE;
     data[18] = 0.0016;
-    data[19] = 0;
+    data[19] = ssaoActive ? 1 : 0;
     this.device.queue.writeBuffer(this.shadowUniformBuffer, 0, data);
   }
 
@@ -4387,10 +4390,13 @@ export class Renderer {
     // not force-disabled by a query override. Compute before the shadow uniform
     // write so the in-shader shadow-sample flag matches what the pass renders.
     const runShadows = this.settings.shadowsEnabled && this.frameGraph.isEnabled('shadow-directional');
+    // SSAO is a deferred-only effect, toggleable via pass.ssao; carried into the
+    // shader on the free shadow-uniform .w slot (the forward path ignores it).
+    const runSsao = this.renderGraphMode === 'deferred' && this.frameGraph.isEnabled('deferred-ssao');
 
     this.resize();
     this.writeUniforms(camera, viewProj, timeSeconds);
-    this.writeShadowUniforms(camera, runShadows);
+    this.writeShadowUniforms(camera, runShadows, runSsao);
     if (this.settings.farTerrainEnabled) this.updateFarTerrain(camera.position, timeSeconds);
     if (this.settings.waterEnabled) this.updateWater(camera.position);
     this.uploadRing.flush();
