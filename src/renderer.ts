@@ -4383,6 +4383,35 @@ export class Renderer {
         lpass.setBindGroup(0, lightBindGroup);
         lpass.draw(3);
         lpass.end();
+        // Forward overlay (water + vegetation) composited over the deferred-lit
+        // terrain, depth-tested against the G-buffer depth so they occlude
+        // correctly. The plan keeps these forward rather than deferred; they use
+        // their existing pipelines and self-light. Markers stay forward too but
+        // are omitted here until the deferred path is the default.
+        const drawWater = this.settings.waterEnabled && this.water !== null;
+        const drawVeg = this.settings.vegetationEnabled && vegetationBatchBuffer !== null && vegetationInstances > 0;
+        if (drawWater || drawVeg) {
+          const opass = encoder.beginRenderPass({
+            label: 'deferred forward overlay pass',
+            colorAttachments: [{ view: colorView, loadOp: 'load', storeOp: 'store' }],
+            depthStencilAttachment: { view: depthView, depthLoadOp: 'load', depthStoreOp: 'store' },
+            timestampWrites: this.frameGraph.timed('deferred-overlay', 'render', false),
+          });
+          opass.setBindGroup(0, this.uniformBindGroup);
+          if (drawWater && this.water) {
+            opass.setPipeline(this.waterPipeline);
+            opass.setVertexBuffer(0, this.water.vertexBuffer);
+            opass.setIndexBuffer(this.water.indexBuffer, 'uint32');
+            opass.drawIndexed(this.water.indexCount);
+          }
+          if (drawVeg && vegetationBatchBuffer) {
+            opass.setPipeline(this.vegetationPipeline);
+            opass.setVertexBuffer(0, this.treeVertexBuffer);
+            opass.setVertexBuffer(1, vegetationBatchBuffer);
+            opass.draw(this.treeVertexCount, vegetationInstances);
+          }
+          opass.end();
+        }
       }
     } else {
     const pass = encoder.beginRenderPass({
