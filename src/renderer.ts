@@ -1366,6 +1366,82 @@ ${SCENE_WGSL}
 @group(0) @binding(3) var gbSampler: sampler;
 @group(0) @binding(4) var worldTex: texture_2d<f32>;
 ${WGSL_HELPERS}
+// Noise chain + cinematic_light copied verbatim from TERRAIN_SHADER so the
+// deferred terrain gets the same warm sun, landform shade, noise-driven broad
+// terrain shadow, golden slope, and grade. The ONLY change is sample_sun_shadow
+// -> 1.0 (real sun shadows need the shadow map bound into this pass; follow-up).
+// Duplicated rather than extracted so compat's TERRAIN_SHADER stays untouched.
+fn hash_u32(x: u32) -> u32 {
+  var h = x;
+  h = h ^ (h >> 16u);
+  h = h * 0x7feb352du;
+  h = h ^ (h >> 15u);
+  h = h * 0x846ca68bu;
+  h = h ^ (h >> 16u);
+  return h;
+}
+fn hash2i(p: vec2<i32>) -> u32 {
+  let x = bitcast<u32>(p.x);
+  let y = bitcast<u32>(p.y);
+  return hash_u32((x * 0x8da6b343u) ^ (y * 0xd8163841u));
+}
+fn hash01(p: vec2<i32>) -> f32 {
+  return f32(hash2i(p) & 0x00ffffffu) / 16777215.0;
+}
+fn fade2(t: vec2<f32>) -> vec2<f32> {
+  return t * t * t * (t * (t * 6.0 - vec2<f32>(15.0)) + vec2<f32>(10.0));
+}
+fn fast_noise2(p: vec2<f32>) -> f32 {
+  let i = vec2<i32>(i32(floor(p.x)), i32(floor(p.y)));
+  let f = p - vec2<f32>(f32(i.x), f32(i.y));
+  let u = fade2(f);
+  let a = hash01(i);
+  let b = hash01(i + vec2<i32>(1, 0));
+  let c = hash01(i + vec2<i32>(0, 1));
+  let d = hash01(i + vec2<i32>(1, 1));
+  return mix(mix(a, b, u.x), mix(c, d, u.x), u.y) * 2.0 - 1.0;
+}
+fn fbm2(p0: vec2<f32>) -> f32 {
+  var p = p0;
+  var sum = 0.0;
+  var amp = 0.5;
+  var norm = 0.0;
+  for (var i = 0; i < 4; i = i + 1) {
+    sum = sum + fast_noise2(p) * amp;
+    norm = norm + amp;
+    p = p * 2.03 + vec2<f32>(13.7, -9.2);
+    amp = amp * 0.5;
+  }
+  return sum / max(norm, 0.0001);
+}
+fn cinematic_light(color: vec3<f32>, n: vec3<f32>, world: vec3<f32>, ao: f32) -> vec3<f32> {
+  let sunDir = normalize(scene.sun.xyz);
+  let viewDir = normalize(scene.camera.xyz - world);
+  let sunHeight = saturate(sunDir.y);
+  let direct = saturate(dot(n, sunDir));
+  let lowSun = saturate(1.0 - sunHeight * 1.25);
+  let face = pow(direct, 1.10);
+  let halfLambert = pow(direct * 0.5 + 0.5, 3.4);
+  let shadowShape = 0.008 + face * 2.34 + halfLambert * 0.040;
+  let warmSun = mix(vec3<f32>(1.86, 1.02, 0.44), vec3<f32>(1.12, 0.92, 0.66), sunHeight);
+  let skyAmbient = mix(vec3<f32>(0.012, 0.032, 0.060), vec3<f32>(0.095, 0.160, 0.220), saturate(n.y * 0.5 + 0.5));
+  let groundBounce = vec3<f32>(0.34, 0.20, 0.070) * saturate(1.0 - n.y) * 0.075;
+  let rim = pow(1.0 - saturate(dot(n, viewDir)), 2.8) * vec3<f32>(0.10, 0.15, 0.19);
+  let landformShade = mix(0.34, 1.20, smoothstep(-0.18, 0.92, dot(n, normalize(vec3<f32>(-sunDir.x, 0.18, -sunDir.z)))));
+  let hollow = smoothstep(-0.35, 0.76, fbm2(world.xz * 0.018 + vec2<f32>(world.y * 0.018, -world.y * 0.011)));
+  let shadowCast = smoothstep(-0.18, 0.76, fbm2(world.xz * 0.010 + vec2<f32>(sunDir.x, sunDir.z) * world.y * 0.060 + vec2<f32>(31.0, -17.0)));
+  let grazingShadow = mix(0.055, 1.18, max(hollow * 0.64, shadowCast * 0.92)) * mix(0.22, 1.0, direct * 0.70 + saturate(n.y) * 0.30);
+  let sunWash = warmSun * lowSun * (0.06 + pow(saturate(dot(normalize(world - scene.camera.xyz), sunDir)) * 0.5 + 0.5, 2.7) * 0.17);
+  let sunShadow = 1.0;
+  var lit = color * (skyAmbient * 0.20 + warmSun * shadowShape * landformShade * grazingShadow * sunShadow + groundBounce + rim + sunWash);
+  let goldenSlope = smoothstep(0.08, 0.86, direct + saturate(n.y) * 0.18) * lowSun;
+  lit = lit + color * warmSun * goldenSlope * 0.20 * sunShadow;
+  let broadTerrainShadow = smoothstep(-0.34, 0.50, fbm2(world.xz * 0.0036 + vec2<f32>(world.y * 0.010, -world.y * 0.006) + vec2<f32>(-19.0, 31.0)));
+  let longShadow = mix(0.28, 1.18, broadTerrainShadow) * mix(0.72, 1.0, direct * 0.58 + saturate(n.y) * 0.42);
+  lit = lit * mix(1.0, longShadow, lowSun * 0.92);
+  let graded = max((lit - vec3<f32>(0.022)) * (1.56 + lowSun * 0.24) + vec3<f32>(0.022), vec3<f32>(0.0));
+  return graded * mix(0.26, 1.0, ao);
+}
 // tone_map + apply_atmosphere are copied verbatim from TERRAIN_SHADER so the
 // deferred terrain gets the same cinematic grade + aerial distance haze as the
 // forward path. (They have no noise dependencies, so this stays a small copy;
@@ -1423,13 +1499,9 @@ fn fs_main(input: VOut) -> @location(0) vec4<f32> {
   let albedo = albedoSample.rgb;
   let n = normalize(normalSample.xyz * 2.0 - vec3<f32>(1.0));
   let ao = normalSample.w;
-  let sunDir = normalize(scene.sun.xyz);
-  let ndl = saturate(dot(n, sunDir));
-  let skyAmbient = vec3<f32>(0.42, 0.52, 0.64);
-  let sunColor = vec3<f32>(1.04, 0.94, 0.78);
-  // Linear lit colour, then the shared aerial-perspective haze and cinematic
-  // tone/grade from the forward path.
-  let lit = albedo * (skyAmbient * 0.36 + sunColor * (ndl * 0.96)) * (0.42 + ao * 0.58);
+  // Forward terrain lighting chain (sans real sun shadow): cinematic_light ->
+  // aerial-perspective haze -> cinematic tone/grade.
+  let lit = cinematic_light(albedo, n, world, ao);
   let hazed = apply_atmosphere(lit, world);
   return vec4<f32>(tone_map(hazed), 1.0);
 }`;
