@@ -46,6 +46,54 @@ Shader packs such as Photon should be treated as design and feature references, 
 
 ## Current Implementation Status
 
+Status update as of 2026-05-30 (Photon-class renderer track — second horizon):
+
+The second-horizon Photon-class deferred pipeline is now substantially
+implemented and is exercised behind `?renderGraph=deferred` (or at runtime via
+`__stormSetRenderGraph('deferred'|'compat')`). The default forward ("compat")
+path is byte-for-byte unchanged and re-verified after every shared-module edit.
+
+- Upgrade 1 (render graph + resource registry): COMPLETE. `src/render_graph.ts`
+  (`FrameGraph`) declares the passes (setup-update, terrain-cull, shadow-
+  directional, main-forward, depth-pyramid, plus the deferred passes), gives each
+  a stable name + best-effort GPU timestamp timing (surfaced on the overlay
+  "Render graph:" line and `RendererStats.renderGraph`/automation reports), and
+  honors `pass.<name>` query overrides. `src/render_targets.ts` (`RenderTargets`)
+  centralizes attachment allocation (depth, sun shadow, and the deferred
+  G-buffer/scene-colour, lazily allocated on first deferred use).
+- Upgrade 2 (shader library): PARTIAL. The duplicated `Scene` uniform struct and
+  the `saturate` helper are shared WGSL fragments interpolated into the shaders.
+  Helpers that intentionally differ per shader (sky vs terrain tone_map) stay
+  per-shader. A full include/variant assembler remains.
+- Upgrade 3 (hybrid deferred path): COMPLETE for terrain. G-buffer geometry pass
+  (albedo + world-normal/AO + camera-relative world, near arena + far vista),
+  then a deferred lighting pass reproducing the full forward terrain chain
+  (material albedo + cinematic_light w/ warm sun, landform shade, noise-driven
+  broad terrain shadow, real sun shadow, snow/grass-preserve tints, procedural
+  forest-shadow streaks + apply_atmosphere + tone_map). Sky composited behind;
+  vegetation + water drawn forward over the deferred terrain, depth-tested
+  against the G-buffer depth. Near-indistinguishable from the forward render.
+- Upgrade 4 (shadows): single directional map + stabilized fit + caster culling
+  (stages 1-3) done in Phase 8; stage 5 screen-space contact shadows added in the
+  deferred lighting pass. Cascaded shadow maps (stage 4, high/ultra) remain.
+- Upgrade 5 (AO): SSAO in the deferred lighting pass (G-buffer world + normal,
+  distance-culled). Separable blur / half-res target remain.
+- Upgrade 6 (atmosphere/post): single-pass bloom + cinematic vignette in a
+  scene-colour → swapchain present pass. HDR scene target + downsampled blur
+  pyramid remain.
+- Upgrade 9 (profiles/automation): per-pass GPU timing in reports; query toggles
+  `pass.shadow`/`pass.ssao`/`pass.bloom`; `renderGraph=compat|deferred`. A full
+  `visual.profile` matrix and intermediate-attachment capture remain.
+- Upgrade 10 (game integration): render-graph mode is switchable at runtime
+  without resetting game/edit state.
+
+Remaining (genuinely multi-session): Upgrade 7 stages 2-4 (terrain-integrated
+lake basins in worldgen, depth/refraction/reflection composition, SSR), Upgrade 8
+(asset/impostor pipeline + triplanar/material textures), Upgrade 4 stage 4
+(cascaded shadow maps), the SSAO blur + HDR-bloom pyramid, and the first-horizon
+phases still needing work (5 production water, 7 dedicated scenery, 8 real
+shadow/AO tuning into the forward path).
+
 Status as of 2026-05-25:
 
 - Phase 1 is partially implemented: `EngineSettings`/`RendererSettings` now include `exposure`, `atmosphereStrength`, `skyEnabled`, and `cinematicLighting`; sanitization migrates old saved settings; quality presets set the new visual controls; the settings panel exposes compact visual controls plus opt-in game markers; and the engine-settings storage key is now `stormCanyon.engineSettings.v20` so the current higher pulled-back wide-overlook reference defaults are applied instead of stale saved visual defaults.
@@ -1070,12 +1118,12 @@ Recommended implementation order:
 6. Upgrade vegetation shader and tree mesh. Status: shader/distribution first pass started, renderer-side far forest and pine/shrub/rock variants added, richer mesh variety and impostors remain.
 7. Tune vegetation distribution. Status: first pass started, near-tree scale reduced and far-forest density now tuned for the SDF-near reference view, with procedural receiver-shadow streaks on terrain, low-poly shrub/rock variants in the existing vegetation batch, and reduced far-forest pressure when near SDF terrain is enabled.
 8. Capture screenshots and tune constants. Status: latest multi-viewport artifacts are under `output/playwright/visual-capture/`; compare reports are under `output/playwright/visual-reports/`; aggregate metrics, compact perceptual signatures, and compressed full-resolution luma fields are stored in `docs/visual-quality-baseline.json`.
-9. Decide whether shadow mapping is worth the added complexity.
-10. Start the Photon-class upgrade track with render graph/resource registry scaffolding, but keep the compatibility graph visually equivalent.
-11. Move shared WGSL helpers into a shader library/variant assembler.
-12. Add G-buffer/deferred terrain behind `renderGraph=deferred`.
-13. Promote shadows, AO, water composite, atmosphere, bloom, and color grade as separate profile-gated passes.
-14. Extend query-string automation and visual-regression scripts to capture intermediate attachments and compare profile matrices.
+9. Decide whether shadow mapping is worth the added complexity. Status: done — single directional shadow map shipped (Phase 8), plus deferred contact shadows.
+10. Start the Photon-class upgrade track with render graph/resource registry scaffolding, but keep the compatibility graph visually equivalent. Status: DONE — `FrameGraph` + `RenderTargets`, compat graph pixel-identical, query pass toggles + GPU timing.
+11. Move shared WGSL helpers into a shader library/variant assembler. Status: partial — `Scene` struct + `saturate` shared; full include/variant assembler pending.
+12. Add G-buffer/deferred terrain behind `renderGraph=deferred`. Status: DONE — deferred terrain matches the forward cinematic chain; sky/vegetation/water composited; runtime-switchable.
+13. Promote shadows, AO, water composite, atmosphere, bloom, and color grade as separate profile-gated passes. Status: partial — deferred lighting carries real + contact shadows, SSAO, atmosphere; bloom + vignette are a present pass; toggled via `pass.*`. Water composite (depth/refraction/reflection) pending.
+14. Extend query-string automation and visual-regression scripts to capture intermediate attachments and compare profile matrices. Status: partial — `pass.*`/`renderGraph=` flags + per-pass GPU timing in reports; profile matrix + intermediate-attachment capture pending (Playwright not installed locally).
 
 This order gives visible improvement early while keeping each step reversible.
 
