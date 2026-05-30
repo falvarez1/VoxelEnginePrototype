@@ -31,7 +31,10 @@ function parseRenderGraphOverrides(): Record<string, boolean> {
   const overrides: Record<string, boolean> = {};
   if (typeof location === 'undefined' || !location.search) return overrides;
   const params = new URLSearchParams(location.search);
-  const aliases: Record<string, string> = { 'pass.shadow': 'shadow-directional' };
+  const aliases: Record<string, string> = {
+    'pass.shadow': 'shadow-directional',
+    'pass.bloom': 'deferred-bloom',
+  };
   for (const [flag, passName] of Object.entries(aliases)) {
     const value = params.get(flag);
     if (value !== null) overrides[passName] = value !== '0' && value.toLowerCase() !== 'false';
@@ -4696,12 +4699,15 @@ export class Renderer {
               { binding: 1, resource: this.compositeSampler },
             ],
           });
+          // pass.bloom=0 presents the scene with no glow (plain composite) for
+          // comparison / perf; otherwise the bloom pipeline adds the halo.
+          const bloomOn = this.frameGraph.isEnabled('deferred-bloom');
           const bpass = encoder.beginRenderPass({
             label: 'deferred bloom present pass',
             colorAttachments: [{ view: colorView, clearValue: { r: 0, g: 0, b: 0, a: 1 }, loadOp: 'clear', storeOp: 'store' }],
             timestampWrites: this.frameGraph.timed('deferred-bloom', 'render', false),
           });
-          bpass.setPipeline(this.bloomPipeline);
+          bpass.setPipeline(bloomOn ? this.bloomPipeline : this.compositePipeline);
           bpass.setBindGroup(0, bloomBindGroup);
           bpass.draw(3);
           bpass.end();
