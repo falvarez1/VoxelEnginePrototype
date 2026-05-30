@@ -2585,7 +2585,11 @@ fn fs_main(input: VertexOut) -> @location(0) vec4<f32> {
   let waterFog = mix(vec3<f32>(0.36, 0.50, 0.60), vec3<f32>(0.96, 0.62, 0.28), clamp(sunSide * 0.66 + lowSun * 0.08, 0.0, 1.0));
   color = mix(color, waterFog, fog * 0.86);
   color = pow((color * scene.visual.x) / (color * scene.visual.x + vec3<f32>(1.0)), vec3<f32>(1.0 / 2.2));
-  return vec4<f32>(color, 1.0);
+  // Depth-based opacity: deep channel water stays near-opaque; shallows let the
+  // lit riverbed show through. The compat water pipeline is opaque (no blend) so
+  // it ignores this alpha; only the deferred water pipeline alpha-blends with it.
+  let waterAlpha = mix(0.93, 0.60, shallow);
+  return vec4<f32>(color, waterAlpha);
 }
 `;
 
@@ -2933,6 +2937,9 @@ export class Renderer {
   deferredLightPipeline!: GPURenderPipeline;
   deferredLightBindGroupLayout!: GPUBindGroupLayout;
   bloomPipeline!: GPURenderPipeline;
+  // Alpha-blended water for the deferred overlay (shows the lit riverbed through
+  // the shallows). Compat keeps the opaque waterPipeline.
+  deferredWaterPipeline!: GPURenderPipeline;
   shadowCasterPipeline!: GPURenderPipeline;
   shadowVegetationCasterPipeline!: GPURenderPipeline;
   shadowCasterBindGroupLayout!: GPUBindGroupLayout;
@@ -3474,6 +3481,27 @@ export class Renderer {
         entryPoint: 'fs_main',
         targets: [{
           format: this.format,
+        }],
+      },
+      primitive: { topology: 'triangle-list', cullMode: 'none' },
+      depthStencil: { format: DEPTH_FORMAT, depthWriteEnabled: true, depthCompare: 'less' },
+    });
+
+    // Deferred water: same shader, but alpha-blends over the lit terrain already
+    // in the scene-colour target so the riverbed shows through the shallows.
+    this.deferredWaterPipeline = this.device.createRenderPipeline({
+      label: 'deferred water pipeline',
+      layout: pipelineLayout,
+      vertex: { module: waterModule, entryPoint: 'vs_main', buffers: [floatTerrainVertexLayout] },
+      fragment: {
+        module: waterModule,
+        entryPoint: 'fs_main',
+        targets: [{
+          format: this.format,
+          blend: {
+            color: { srcFactor: 'src-alpha', dstFactor: 'one-minus-src-alpha', operation: 'add' },
+            alpha: { srcFactor: 'one', dstFactor: 'one-minus-src-alpha', operation: 'add' },
+          },
         }],
       },
       primitive: { topology: 'triangle-list', cullMode: 'none' },
@@ -4743,7 +4771,9 @@ export class Renderer {
           });
           opass.setBindGroup(0, this.uniformBindGroup);
           if (drawWater && this.water) {
-            opass.setPipeline(this.waterPipeline);
+            // Deferred water alpha-blends over the lit terrain in the scene-colour
+            // target, so the riverbed shows through the shallows.
+            opass.setPipeline(this.deferredWaterPipeline);
             opass.setVertexBuffer(0, this.water.vertexBuffer);
             opass.setIndexBuffer(this.water.indexBuffer, 'uint32');
             opass.drawIndexed(this.water.indexCount);
