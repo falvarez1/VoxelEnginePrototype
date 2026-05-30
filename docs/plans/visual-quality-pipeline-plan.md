@@ -81,18 +81,25 @@ path is byte-for-byte unchanged and re-verified after every shared-module edit.
 - Upgrade 6 (atmosphere/post): single-pass bloom + cinematic vignette in a
   scene-colour → swapchain present pass. HDR scene target + downsampled blur
   pyramid remain.
-- Upgrade 9 (profiles/automation): per-pass GPU timing in reports; query toggles
-  `pass.shadow`/`pass.ssao`/`pass.bloom`; `renderGraph=compat|deferred`. A full
-  `visual.profile` matrix and intermediate-attachment capture remain.
+- Upgrade 7 (water): stages 1-2 done in the deferred overlay. Depth-graded
+  translucency, then refraction: the lit scene (sky + terrain) is snapshotted
+  into a refraction-source target before the water draws, and a dedicated
+  `DEFERRED_WATER_SHADER` (a duplicate of the compat water shader, which stays
+  byte-for-byte) samples the bed at a ripple-distorted screen UV and mixes it in
+  under the water tint — strongest in the shallows, opaque in the deep channel
+  and at distance. Terrain-integrated lake basins (worldgen) + SSR remain.
+- Upgrade 9 (profiles/automation): COMPLETE. Per-pass GPU timing in reports;
+  query toggles `pass.shadow`/`pass.ssao`/`pass.bloom`; `renderGraph=compat|
+  deferred`; and `visual.profile=cinematic|balanced|performance|flat` bundling
+  those passes per quality tier (profile name shown on the overlay mode tag).
 - Upgrade 10 (game integration): render-graph mode is switchable at runtime
   without resetting game/edit state.
 
-Remaining (genuinely multi-session): Upgrade 7 stages 2-4 (terrain-integrated
-lake basins in worldgen, depth/refraction/reflection composition, SSR), Upgrade 8
-(asset/impostor pipeline + triplanar/material textures), Upgrade 4 stage 4
-(cascaded shadow maps), the SSAO blur + HDR-bloom pyramid, and the first-horizon
-phases still needing work (5 production water, 7 dedicated scenery, 8 real
-shadow/AO tuning into the forward path).
+Remaining (genuinely multi-session): Upgrade 7 lake basins in worldgen + SSR,
+Upgrade 8 (asset/impostor pipeline + triplanar/material textures), Upgrade 4
+stage 4 (cascaded shadow maps), the SSAO blur + HDR-bloom pyramid, and the
+first-horizon phases still needing work (5 production water, 7 dedicated scenery,
+8 real shadow/AO tuning into the forward path).
 
 Status as of 2026-05-25:
 
