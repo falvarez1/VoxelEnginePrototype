@@ -1392,7 +1392,10 @@ fn fs_main(input: VOut) -> @location(0) vec4<f32> {
     wsum = wsum + w;
   }
   bloom = bloom / max(wsum, 0.0001);
-  return vec4<f32>(scene + bloom * 1.6, 1.0);
+  // Subtle cinematic vignette: gently darken the outer frame (max ~12%) to draw
+  // the eye inward (Photon Upgrade 6 color-grade/post).
+  let vignette = 1.0 - smoothstep(0.34, 0.92, length(input.uv - vec2<f32>(0.5))) * 0.22;
+  return vec4<f32>((scene + bloom * 1.6) * vignette, 1.0);
 }`;
 
 // Deferred lighting pass (Photon Upgrade 3). Reads the G-buffer (albedo, world
