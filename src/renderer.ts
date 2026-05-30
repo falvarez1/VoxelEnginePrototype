@@ -1392,10 +1392,18 @@ fn fs_main(input: VOut) -> @location(0) vec4<f32> {
     wsum = wsum + w;
   }
   bloom = bloom / max(wsum, 0.0001);
+  var graded = scene + bloom * 1.6;
+  // Subtle teal-orange cinematic color grade (Photon Upgrade 6): cool the
+  // shadows toward blue-teal, warm the highlights, by luma — a gentle filmic
+  // split-tone kept near 1.0 so it reads as cohesion, not a heavy LUT.
+  let luma = dot(graded, vec3<f32>(0.2126, 0.7152, 0.0722));
+  let shadowTint = vec3<f32>(0.965, 0.995, 1.045);
+  let highlightTint = vec3<f32>(1.045, 1.005, 0.95);
+  graded = graded * mix(shadowTint, highlightTint, smoothstep(0.18, 0.82, luma));
   // Subtle cinematic vignette: gently darken the outer frame (max ~12%) to draw
-  // the eye inward (Photon Upgrade 6 color-grade/post).
+  // the eye inward.
   let vignette = 1.0 - smoothstep(0.34, 0.92, length(input.uv - vec2<f32>(0.5))) * 0.22;
-  return vec4<f32>((scene + bloom * 1.6) * vignette, 1.0);
+  return vec4<f32>(graded * vignette, 1.0);
 }`;
 
 // Deferred lighting pass (Photon Upgrade 3). Reads the G-buffer (albedo, world
