@@ -21,6 +21,7 @@ export interface RenderTargetsConfig {
   deferred?: boolean;
   gbufferAlbedoFormat?: GPUTextureFormat;
   gbufferNormalFormat?: GPUTextureFormat;
+  gbufferWorldFormat?: GPUTextureFormat;
 }
 
 export class RenderTargets {
@@ -36,8 +37,10 @@ export class RenderTargets {
   readonly deferred: boolean;
   readonly gbufferAlbedoFormat: GPUTextureFormat;
   readonly gbufferNormalFormat: GPUTextureFormat;
+  readonly gbufferWorldFormat: GPUTextureFormat;
   private gbufferAlbedoTex: GPUTexture | null = null;
   private gbufferNormalTex: GPUTexture | null = null;
+  private gbufferWorldTex: GPUTexture | null = null;
   width = 0;
   height = 0;
 
@@ -49,6 +52,7 @@ export class RenderTargets {
     this.deferred = config.deferred ?? false;
     this.gbufferAlbedoFormat = config.gbufferAlbedoFormat ?? 'rgba8unorm';
     this.gbufferNormalFormat = config.gbufferNormalFormat ?? 'rgba16float';
+    this.gbufferWorldFormat = config.gbufferWorldFormat ?? 'rgba16float';
     // Sun shadow map: fixed resolution, allocated once (does not track canvas).
     this.shadowTex = device.createTexture({
       label: 'sun shadow depth',
@@ -88,6 +92,13 @@ export class RenderTargets {
         format: this.gbufferNormalFormat,
         usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING,
       });
+      this.gbufferWorldTex?.destroy();
+      this.gbufferWorldTex = this.device.createTexture({
+        label: 'gbuffer world',
+        size: [width, height],
+        format: this.gbufferWorldFormat,
+        usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING,
+      });
     }
     return true;
   }
@@ -97,6 +108,7 @@ export class RenderTargets {
   get shadowDepthView(): GPUTextureView { return this.shadowView; }
   get gbufferAlbedoTexture(): GPUTexture | null { return this.gbufferAlbedoTex; }
   get gbufferNormalTexture(): GPUTexture | null { return this.gbufferNormalTex; }
+  get gbufferWorldTexture(): GPUTexture | null { return this.gbufferWorldTex; }
 
   destroy(): void {
     this.depthTex?.destroy();
@@ -105,6 +117,8 @@ export class RenderTargets {
     this.gbufferAlbedoTex = null;
     this.gbufferNormalTex?.destroy();
     this.gbufferNormalTex = null;
+    this.gbufferWorldTex?.destroy();
+    this.gbufferWorldTex = null;
     this.shadowTex.destroy();
   }
 }

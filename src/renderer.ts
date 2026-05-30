@@ -1364,7 +1364,38 @@ ${SCENE_WGSL}
 @group(0) @binding(1) var albedoTex: texture_2d<f32>;
 @group(0) @binding(2) var normalTex: texture_2d<f32>;
 @group(0) @binding(3) var gbSampler: sampler;
+@group(0) @binding(4) var worldTex: texture_2d<f32>;
 ${WGSL_HELPERS}
+// tone_map + apply_atmosphere are copied verbatim from TERRAIN_SHADER so the
+// deferred terrain gets the same cinematic grade + aerial distance haze as the
+// forward path. (They have no noise dependencies, so this stays a small copy;
+// the noise-dependent cinematic_light + shadows are a later slice.)
+fn tone_map(color: vec3<f32>) -> vec3<f32> {
+  let exposed = max(color * max(scene.visual.x, 0.01), vec3<f32>(0.0));
+  let mapped = exposed / (exposed + vec3<f32>(1.0));
+  let gamma = pow(mapped, vec3<f32>(1.0 / 2.2));
+  let luma = dot(gamma, vec3<f32>(0.2126, 0.7152, 0.0722));
+  let saturated = mix(vec3<f32>(luma), gamma, 1.27);
+  return clamp((saturated - vec3<f32>(0.5)) * 1.16 + vec3<f32>(0.5), vec3<f32>(0.0), vec3<f32>(1.0));
+}
+fn apply_atmosphere(color: vec3<f32>, world: vec3<f32>) -> vec3<f32> {
+  let d = distance(scene.camera.xyz, world);
+  let atmosphere = max(scene.visual.y, 0.0);
+  let distanceFog = max(d - 480.0, 0.0);
+  let fog = saturate(1.0 - exp(-distanceFog * 0.00025 * scene.params.y * atmosphere));
+  let heightFog = saturate((world.y - scene.camera.y + 150.0) / 420.0);
+  let sunDir = normalize(scene.sun.xyz);
+  let sunSide = pow(saturate(dot(normalize(world - scene.camera.xyz), sunDir)) * 0.5 + 0.5, 2.1);
+  let lowSun = saturate(1.0 - sunDir.y * 1.35);
+  let hazeBlue = vec3<f32>(0.50, 0.60, 0.70);
+  let hazeGold = vec3<f32>(1.72, 0.94, 0.32);
+  let fogColor = mix(hazeBlue, hazeGold, saturate(sunSide * 0.86 + lowSun * 0.03));
+  let aerial = mix(color, fogColor, min(0.52, fog * (0.50 + heightFog * 0.24)));
+  let glare = pow(sunSide, 3.8) * fog * lowSun;
+  let leftWorld = saturate(1.0 - smoothstep(-260.0, 1220.0, world.x - scene.camera.x + d * 0.10));
+  let lowAngleVeil = leftWorld * lowSun * smoothstep(240.0, 1900.0, d) * (1.0 - smoothstep(3600.0, 5200.0, d));
+  return aerial + hazeGold * (glare * 0.82 + lowAngleVeil * 0.26);
+}
 struct VOut {
   @builtin(position) clip: vec4<f32>,
   @location(0) uv: vec2<f32>,
@@ -1387,6 +1418,8 @@ fn fs_main(input: VOut) -> @location(0) vec4<f32> {
   if (dot(normalSample.xyz, normalSample.xyz) < 0.0001) {
     discard;
   }
+  let worldSample = textureSampleLevel(worldTex, gbSampler, input.uv, 0.0);
+  let world = worldSample.xyz + scene.camera.xyz;
   let albedo = albedoSample.rgb;
   let n = normalize(normalSample.xyz * 2.0 - vec3<f32>(1.0));
   let ao = normalSample.w;
@@ -1394,10 +1427,11 @@ fn fs_main(input: VOut) -> @location(0) vec4<f32> {
   let ndl = saturate(dot(n, sunDir));
   let skyAmbient = vec3<f32>(0.42, 0.52, 0.64);
   let sunColor = vec3<f32>(1.04, 0.94, 0.78);
+  // Linear lit colour, then the shared aerial-perspective haze and cinematic
+  // tone/grade from the forward path.
   let lit = albedo * (skyAmbient * 0.36 + sunColor * (ndl * 0.96)) * (0.42 + ao * 0.58);
-  let exposed = max(lit * max(scene.visual.x, 0.01), vec3<f32>(0.0));
-  let mapped = exposed / (exposed + vec3<f32>(1.0));
-  return vec4<f32>(pow(clamp(mapped, vec3<f32>(0.0), vec3<f32>(1.0)), vec3<f32>(1.0 / 2.2)), 1.0);
+  let hazed = apply_atmosphere(lit, world);
+  return vec4<f32>(tone_map(hazed), 1.0);
 }`;
 
 const TERRAIN_SHADER = /* wgsl */`
@@ -1755,6 +1789,7 @@ fn chunk_debug_color(world: vec3<f32>) -> vec3<f32> {
 struct GBufferOut {
   @location(0) albedo: vec4<f32>,
   @location(1) normalAo: vec4<f32>,
+  @location(2) worldRel: vec4<f32>,
 };
 
 @fragment
@@ -1763,6 +1798,9 @@ fn fs_gbuffer(input: VertexOut) -> GBufferOut {
   var out: GBufferOut;
   out.albedo = vec4<f32>(material_color(input.material, input.world, n), input.material.x / 255.0);
   out.normalAo = vec4<f32>(n * 0.5 + vec3<f32>(0.5), input.ao);
+  // Camera-relative world position: stored small (world - camera) so an f16
+  // target keeps usable precision at this engine's large absolute coordinates.
+  out.worldRel = vec4<f32>(input.world - scene.camera.xyz, 1.0);
   return out;
 }
 
@@ -3002,6 +3040,7 @@ export class Renderer {
         targets: [
           { format: this.renderTargets.gbufferAlbedoFormat },
           { format: this.renderTargets.gbufferNormalFormat },
+          { format: this.renderTargets.gbufferWorldFormat },
         ],
       },
       primitive: { topology: 'triangle-list', cullMode: 'none' },
@@ -3020,6 +3059,7 @@ export class Renderer {
         targets: [
           { format: this.renderTargets.gbufferAlbedoFormat },
           { format: this.renderTargets.gbufferNormalFormat },
+          { format: this.renderTargets.gbufferWorldFormat },
         ],
       },
       primitive: { topology: 'triangle-list', cullMode: 'none' },
@@ -3055,6 +3095,7 @@ export class Renderer {
         { binding: 1, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'float' } },
         { binding: 2, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'float' } },
         { binding: 3, visibility: GPUShaderStage.FRAGMENT, sampler: { type: 'filtering' } },
+        { binding: 4, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'float' } },
       ],
     });
     this.deferredLightPipeline = this.device.createRenderPipeline({
@@ -4309,14 +4350,17 @@ export class Renderer {
       // only — the compat path below is untouched.
       const albedoTex = this.renderTargets.gbufferAlbedoTexture;
       const normalTex = this.renderTargets.gbufferNormalTexture;
-      if (albedoTex && normalTex) {
+      const worldTex = this.renderTargets.gbufferWorldTexture;
+      if (albedoTex && normalTex && worldTex) {
         const albedoView = albedoTex.createView();
         const normalView = normalTex.createView();
+        const worldView = worldTex.createView();
         const gpass = encoder.beginRenderPass({
           label: 'gbuffer geometry pass',
           colorAttachments: [
             { view: albedoView, clearValue: { r: 0, g: 0, b: 0, a: 0 }, loadOp: 'clear', storeOp: 'store' },
             { view: normalView, clearValue: { r: 0, g: 0, b: 0, a: 0 }, loadOp: 'clear', storeOp: 'store' },
+            { view: worldView, clearValue: { r: 0, g: 0, b: 0, a: 0 }, loadOp: 'clear', storeOp: 'store' },
           ],
           depthStencilAttachment: { view: depthView, depthClearValue: 1, depthLoadOp: 'clear', depthStoreOp: 'store' },
           timestampWrites: this.frameGraph.timed('gbuffer-geometry', 'render', false),
@@ -4372,6 +4416,7 @@ export class Renderer {
             { binding: 1, resource: albedoView },
             { binding: 2, resource: normalView },
             { binding: 3, resource: this.compositeSampler },
+            { binding: 4, resource: worldView },
           ],
         });
         const lpass = encoder.beginRenderPass({
