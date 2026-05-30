@@ -1565,6 +1565,33 @@ fn compute_ssao(uv: vec2<f32>, worldRel: vec3<f32>, n: vec3<f32>) -> f32 {
   if (count < 1.0) { return 1.0; }
   return clamp(1.0 - (occ / count) * 1.8, 0.4, 1.0);
 }
+// Screen-space contact shadows (Photon Upgrade 4 stage 5): a short ray-march
+// toward the sun through the G-buffer to catch fine, short-range occlusion the
+// directional shadow map's resolution misses (e.g. terrain folds). Conservative
+// (near pixels, sun-facing only, biased start, bounded thickness) to avoid the
+// camera-distance proxy's haloing; soft and faded by march distance.
+fn contact_shadow(worldRel: vec3<f32>, n: vec3<f32>) -> f32 {
+  let sunDir = normalize(scene.sun.xyz);
+  if (dot(n, sunDir) <= 0.06) { return 1.0; }
+  let stepLen = 0.65;
+  var p = worldRel + n * 0.35;
+  for (var i = 0; i < 6; i = i + 1) {
+    p = p + sunDir * stepLen;
+    let clip = scene.viewProjRel * vec4<f32>(p, 1.0);
+    if (clip.w <= 0.0) { return 1.0; }
+    let ndc = clip.xyz / clip.w;
+    if (abs(ndc.x) > 1.0 || abs(ndc.y) > 1.0) { return 1.0; }
+    let suv = vec2<f32>(ndc.x * 0.5 + 0.5, ndc.y * -0.5 + 0.5);
+    let sNormal = textureSampleLevel(normalTex, gbSampler, suv, 0.0);
+    if (dot(sNormal.xyz, sNormal.xyz) < 0.0001) { return 1.0; }
+    let surfDist = length(textureSampleLevel(worldTex, gbSampler, suv, 0.0).xyz);
+    let diff = length(p) - surfDist;
+    if (diff > 0.30 && diff < 2.2) {
+      return mix(0.6, 1.0, f32(i) / 6.0);
+    }
+  }
+  return 1.0;
+}
 // tone_map + apply_atmosphere are copied verbatim from TERRAIN_SHADER so the
 // deferred terrain gets the same cinematic grade + aerial distance haze as the
 // forward path. (They have no noise dependencies, so this stays a small copy;
@@ -1644,6 +1671,11 @@ fn fs_main(input: VOut) -> @location(0) vec4<f32> {
   // frame is distant, so this cuts the AO-tap cost sharply with no visible loss.
   if (shadow.params.w > 0.5 && dot(worldSample.xyz, worldSample.xyz) < 240.0 * 240.0) {
     lit = lit * compute_ssao(input.uv, worldSample.xyz, n);
+  }
+  // Contact shadows refine the directional shadow map at short range; near
+  // pixels only, and only when real shadows are active (shadow.params.x).
+  if (shadow.params.x > 0.5 && dot(worldSample.xyz, worldSample.xyz) < 160.0 * 160.0) {
+    lit = lit * contact_shadow(worldSample.xyz, n);
   }
   let hazed = apply_atmosphere(lit, world);
   return vec4<f32>(tone_map(hazed), 1.0);
