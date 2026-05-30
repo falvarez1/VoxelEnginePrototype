@@ -1497,6 +1497,32 @@ fn procedural_forest_shadow(world: vec3<f32>, n: vec3<f32>, m: vec4<f32>) -> f32
   let valleyGradient = smoothstep(-900.0, 820.0, scene.camera.z - world.z);
   return clamp(receiverMaterial * receiverSlope * snowClear * cover * longBands * brokenBands * (0.36 + canopyBreakup * 0.84) * lowSun * distanceFade * (1.62 + valleyGradient * 0.34), 0.0, 0.94);
 }
+// Screen-space ambient occlusion (Photon Upgrade 5), feasible now the G-buffer
+// carries camera-relative world + normal. For each of 8 rotated screen taps it
+// reads the neighbour's world position and adds occlusion when the neighbour
+// rises above this point's tangent plane within a world-space radius. Returns a
+// [floor,1] multiplier; point-sampled (a separable blur pass is a follow-up).
+fn compute_ssao(uv: vec2<f32>, worldRel: vec3<f32>, n: vec3<f32>) -> f32 {
+  let radius = 16.0;
+  var occ = 0.0;
+  var count = 0.0;
+  let rot = fract(sin(dot(uv * 1024.0, vec2<f32>(12.9898, 78.233))) * 43758.5453) * 6.2831853;
+  for (var i = 0; i < 8; i = i + 1) {
+    let ang = rot + f32(i) * 0.7853982;
+    let r = (0.30 + 0.70 * (f32(i) + 1.0) / 8.0) * 0.020;
+    let suv = uv + vec2<f32>(cos(ang), sin(ang)) * r;
+    let sNormal = textureSampleLevel(normalTex, gbSampler, suv, 0.0);
+    if (dot(sNormal.xyz, sNormal.xyz) < 0.0001) { continue; }
+    let sWorldRel = textureSampleLevel(worldTex, gbSampler, suv, 0.0).xyz;
+    let toS = sWorldRel - worldRel;
+    let dist = length(toS);
+    if (dist < 0.05 || dist > radius) { continue; }
+    occ += max(dot(n, toS / dist) - 0.1, 0.0) * (1.0 - dist / radius);
+    count += 1.0;
+  }
+  if (count < 1.0) { return 1.0; }
+  return clamp(1.0 - (occ / count) * 1.8, 0.4, 1.0);
+}
 // tone_map + apply_atmosphere are copied verbatim from TERRAIN_SHADER so the
 // deferred terrain gets the same cinematic grade + aerial distance haze as the
 // forward path. (They have no noise dependencies, so this stays a small copy;
@@ -1569,6 +1595,10 @@ fn fs_main(input: VOut) -> @location(0) vec4<f32> {
     forestShadow = forestShadow * (1.0 - realCoverage);
   }
   lit = lit * (1.0 - forestShadow);
+  // Screen-space AO: deepens valley/crease/contact occlusion the coarse vertex
+  // AO misses. A deferred-path effect beyond the forward baseline (Upgrade 5).
+  let ssao = compute_ssao(input.uv, worldSample.xyz, n);
+  lit = lit * ssao;
   let hazed = apply_atmosphere(lit, world);
   return vec4<f32>(tone_map(hazed), 1.0);
 }`;
