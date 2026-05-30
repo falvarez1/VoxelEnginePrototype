@@ -1353,6 +1353,44 @@ fn fs_main(input: VOut) -> @location(0) vec4<f32> {
   return textureSampleLevel(srcTex, srcSampler, input.uv, 0.0);
 }`;
 
+// Bloom + present (Photon Upgrade 6). Final deferred stage: reads the offscreen
+// scene colour, adds a soft glow sampled from bright (above-threshold) pixels in
+// a multi-ring disc, and writes the swapchain. Single-pass (a downsampled blur
+// pyramid is a follow-up); cheap and gives bright snow/sky/water-glint haloing.
+const BLOOM_SHADER = /* wgsl */`
+@group(0) @binding(0) var sceneTex: texture_2d<f32>;
+@group(0) @binding(1) var sceneSampler: sampler;
+struct VOut {
+  @builtin(position) clip: vec4<f32>,
+  @location(0) uv: vec2<f32>,
+};
+@vertex
+fn vs_main(@builtin(vertex_index) vid: u32) -> VOut {
+  var pos = array<vec2<f32>, 3>(vec2<f32>(-1.0, -1.0), vec2<f32>(3.0, -1.0), vec2<f32>(-1.0, 3.0));
+  let xy = pos[vid];
+  var out: VOut;
+  out.clip = vec4<f32>(xy, 0.0, 1.0);
+  out.uv = vec2<f32>(xy.x * 0.5 + 0.5, 1.0 - (xy.y * 0.5 + 0.5));
+  return out;
+}
+@fragment
+fn fs_main(input: VOut) -> @location(0) vec4<f32> {
+  let scene = textureSampleLevel(sceneTex, sceneSampler, input.uv, 0.0).rgb;
+  let threshold = vec3<f32>(0.70);
+  var bloom = vec3<f32>(0.0);
+  var wsum = 0.0;
+  for (var i = 0; i < 24; i = i + 1) {
+    let ang = f32(i) * 0.2617994;
+    let ring = 0.0035 + 0.0075 * f32(i % 6) / 5.0;
+    let w = 1.0 - 0.6 * f32(i % 6) / 5.0;
+    let s = textureSampleLevel(sceneTex, sceneSampler, input.uv + vec2<f32>(cos(ang), sin(ang)) * ring, 0.0).rgb;
+    bloom = bloom + max(s - threshold, vec3<f32>(0.0)) * w;
+    wsum = wsum + w;
+  }
+  bloom = bloom / max(wsum, 0.0001);
+  return vec4<f32>(scene + bloom * 1.6, 1.0);
+}`;
+
 // Deferred lighting pass (Photon Upgrade 3). Reads the G-buffer (albedo, world
 // normal + AO) and computes lighting per screen pixel, writing the lit image to
 // the swapchain. This first version is a self-contained directional + sky-
@@ -2843,6 +2881,7 @@ export class Renderer {
   compositeSampler!: GPUSampler;
   deferredLightPipeline!: GPURenderPipeline;
   deferredLightBindGroupLayout!: GPUBindGroupLayout;
+  bloomPipeline!: GPURenderPipeline;
   shadowCasterPipeline!: GPURenderPipeline;
   shadowVegetationCasterPipeline!: GPURenderPipeline;
   shadowCasterBindGroupLayout!: GPUBindGroupLayout;
@@ -2976,6 +3015,8 @@ export class Renderer {
     this.device = await adapter.requestDevice(requiredFeatures.length > 0 ? { requiredFeatures } : undefined);
     this.capabilities.multiDrawIndirect = this.device.features.has(MULTI_DRAW_INDIRECT_FEATURE);
     this.capabilities.timestampQuery = this.device.features.has('timestamp-query');
+    // Resolve the swapchain format early so the scene-colour target can match it.
+    this.format = navigator.gpu.getPreferredCanvasFormat();
     this.frameGraph = new FrameGraph(this.device, this.capabilities.timestampQuery, parseRenderGraphOverrides());
     this.renderGraphMode = parseRenderGraphMode();
     this.frameGraph.mode = this.renderGraphMode;
@@ -2984,6 +3025,7 @@ export class Renderer {
       shadowFormat: DEPTH_FORMAT,
       shadowSize: SHADOW_MAP_SIZE,
       deferred: this.renderGraphMode === 'deferred',
+      sceneColorFormat: this.format,
     });
     // Alias the registry's shadow handles so the bind groups/passes below keep
     // using this.shadowDepth* unchanged.
@@ -3011,7 +3053,6 @@ export class Renderer {
     const context = this.canvas.getContext('webgpu');
     if (!context) throw new Error('Failed to create WebGPU canvas context.');
     this.context = context;
-    this.format = navigator.gpu.getPreferredCanvasFormat();
     this.context.configure({ device: this.device, format: this.format, alphaMode: 'opaque' });
 
     this.uniformBuffer = this.device.createBuffer({
@@ -3252,6 +3293,17 @@ export class Renderer {
       layout: this.device.createPipelineLayout({ bindGroupLayouts: [this.compositeBindGroupLayout] }),
       vertex: { module: compositeModule, entryPoint: 'vs_main' },
       fragment: { module: compositeModule, entryPoint: 'fs_main', targets: [{ format: this.format }] },
+      primitive: { topology: 'triangle-list', cullMode: 'none' },
+    });
+
+    // Bloom + present pipeline (deferred post chain). Reuses the composite bind
+    // group layout (texture + sampler).
+    const bloomModule = this.createShaderModuleChecked('bloom shader', BLOOM_SHADER);
+    this.bloomPipeline = this.device.createRenderPipeline({
+      label: 'bloom pipeline',
+      layout: this.device.createPipelineLayout({ bindGroupLayouts: [this.compositeBindGroupLayout] }),
+      vertex: { module: bloomModule, entryPoint: 'vs_main' },
+      fragment: { module: bloomModule, entryPoint: 'fs_main', targets: [{ format: this.format }] },
       primitive: { topology: 'triangle-list', cullMode: 'none' },
     });
 
@@ -4526,6 +4578,11 @@ export class Renderer {
         const albedoView = albedoTex.createView();
         const normalView = normalTex.createView();
         const worldView = worldTex.createView();
+        // Deferred sky/lighting/overlay render into the offscreen scene-colour
+        // target; a final bloom pass composites it to the swapchain. Falls back
+        // to direct-to-swapchain (no bloom) if the scene target is unavailable.
+        const sceneColorTex = this.renderTargets.sceneColorTexture;
+        const sceneTargetView = sceneColorTex ? sceneColorTex.createView() : colorView;
         const gpass = encoder.beginRenderPass({
           label: 'gbuffer geometry pass',
           colorAttachments: [
@@ -4567,7 +4624,7 @@ export class Renderer {
         // and let the sky show through behind the terrain.
         const skyPass = encoder.beginRenderPass({
           label: 'deferred sky pass',
-          colorAttachments: [{ view: colorView, clearValue: { r: 0.02, g: 0.03, b: 0.05, a: 1 }, loadOp: 'clear', storeOp: 'store' }],
+          colorAttachments: [{ view: sceneTargetView, clearValue: { r: 0.02, g: 0.03, b: 0.05, a: 1 }, loadOp: 'clear', storeOp: 'store' }],
           depthStencilAttachment: { view: depthView, depthReadOnly: true },
         });
         if (this.settings.skyEnabled && this.settings.debugView === 0) {
@@ -4592,7 +4649,7 @@ export class Renderer {
         });
         const lpass = encoder.beginRenderPass({
           label: 'deferred lighting pass',
-          colorAttachments: [{ view: colorView, loadOp: 'load', storeOp: 'store' }],
+          colorAttachments: [{ view: sceneTargetView, loadOp: 'load', storeOp: 'store' }],
           timestampWrites: this.frameGraph.timed('deferred-lighting', 'render', false),
         });
         lpass.setPipeline(this.deferredLightPipeline);
@@ -4610,7 +4667,7 @@ export class Renderer {
         if (drawWater || drawVeg) {
           const opass = encoder.beginRenderPass({
             label: 'deferred forward overlay pass',
-            colorAttachments: [{ view: colorView, loadOp: 'load', storeOp: 'store' }],
+            colorAttachments: [{ view: sceneTargetView, loadOp: 'load', storeOp: 'store' }],
             depthStencilAttachment: { view: depthView, depthLoadOp: 'load', depthStoreOp: 'store' },
             timestampWrites: this.frameGraph.timed('deferred-overlay', 'render', false),
           });
@@ -4628,6 +4685,26 @@ export class Renderer {
             opass.draw(this.treeVertexCount, vegetationInstances);
           }
           opass.end();
+        }
+        // Bloom + present: composite the offscreen scene colour to the swapchain
+        // with a soft glow on bright (above-threshold) pixels (Photon Upgrade 6).
+        if (sceneColorTex) {
+          const bloomBindGroup = this.device.createBindGroup({
+            layout: this.compositeBindGroupLayout,
+            entries: [
+              { binding: 0, resource: sceneTargetView },
+              { binding: 1, resource: this.compositeSampler },
+            ],
+          });
+          const bpass = encoder.beginRenderPass({
+            label: 'deferred bloom present pass',
+            colorAttachments: [{ view: colorView, clearValue: { r: 0, g: 0, b: 0, a: 1 }, loadOp: 'clear', storeOp: 'store' }],
+            timestampWrites: this.frameGraph.timed('deferred-bloom', 'render', false),
+          });
+          bpass.setPipeline(this.bloomPipeline);
+          bpass.setBindGroup(0, bloomBindGroup);
+          bpass.draw(3);
+          bpass.end();
         }
       }
     } else {

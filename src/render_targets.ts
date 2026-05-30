@@ -22,6 +22,10 @@ export interface RenderTargetsConfig {
   gbufferAlbedoFormat?: GPUTextureFormat;
   gbufferNormalFormat?: GPUTextureFormat;
   gbufferWorldFormat?: GPUTextureFormat;
+  // Offscreen scene-colour target for the deferred post chain (bloom). Matches
+  // the swapchain format so the sky/water/vegetation pipelines render into it
+  // unchanged. Only allocated when deferred.
+  sceneColorFormat?: GPUTextureFormat;
 }
 
 export class RenderTargets {
@@ -38,9 +42,11 @@ export class RenderTargets {
   readonly gbufferAlbedoFormat: GPUTextureFormat;
   readonly gbufferNormalFormat: GPUTextureFormat;
   readonly gbufferWorldFormat: GPUTextureFormat;
+  readonly sceneColorFormat: GPUTextureFormat;
   private gbufferAlbedoTex: GPUTexture | null = null;
   private gbufferNormalTex: GPUTexture | null = null;
   private gbufferWorldTex: GPUTexture | null = null;
+  private sceneColorTex: GPUTexture | null = null;
   width = 0;
   height = 0;
 
@@ -53,6 +59,7 @@ export class RenderTargets {
     this.gbufferAlbedoFormat = config.gbufferAlbedoFormat ?? 'rgba8unorm';
     this.gbufferNormalFormat = config.gbufferNormalFormat ?? 'rgba16float';
     this.gbufferWorldFormat = config.gbufferWorldFormat ?? 'rgba16float';
+    this.sceneColorFormat = config.sceneColorFormat ?? 'rgba8unorm';
     // Sun shadow map: fixed resolution, allocated once (does not track canvas).
     this.shadowTex = device.createTexture({
       label: 'sun shadow depth',
@@ -99,6 +106,13 @@ export class RenderTargets {
         format: this.gbufferWorldFormat,
         usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING,
       });
+      this.sceneColorTex?.destroy();
+      this.sceneColorTex = this.device.createTexture({
+        label: 'scene color (deferred post)',
+        size: [width, height],
+        format: this.sceneColorFormat,
+        usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING,
+      });
     }
     return true;
   }
@@ -109,6 +123,7 @@ export class RenderTargets {
   get gbufferAlbedoTexture(): GPUTexture | null { return this.gbufferAlbedoTex; }
   get gbufferNormalTexture(): GPUTexture | null { return this.gbufferNormalTex; }
   get gbufferWorldTexture(): GPUTexture | null { return this.gbufferWorldTex; }
+  get sceneColorTexture(): GPUTexture | null { return this.sceneColorTex; }
 
   destroy(): void {
     this.depthTex?.destroy();
@@ -119,6 +134,8 @@ export class RenderTargets {
     this.gbufferNormalTex = null;
     this.gbufferWorldTex?.destroy();
     this.gbufferWorldTex = null;
+    this.sceneColorTex?.destroy();
+    this.sceneColorTex = null;
     this.shadowTex.destroy();
   }
 }
