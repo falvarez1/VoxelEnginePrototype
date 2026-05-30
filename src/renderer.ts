@@ -1382,10 +1382,10 @@ fn vs_main(@builtin(vertex_index) vid: u32) -> VOut {
 fn fs_main(input: VOut) -> @location(0) vec4<f32> {
   let albedoSample = textureSampleLevel(albedoTex, gbSampler, input.uv, 0.0);
   let normalSample = textureSampleLevel(normalTex, gbSampler, input.uv, 0.0);
-  // Empty G-buffer (no geometry rasterized) -> leave background dark; sky comes
-  // in a later slice when sky is composited into the deferred path.
+  // Empty G-buffer (no geometry rasterized) -> discard so the sky pass drawn
+  // underneath this pass shows through.
   if (dot(normalSample.xyz, normalSample.xyz) < 0.0001) {
-    return vec4<f32>(0.02, 0.03, 0.05, 1.0);
+    discard;
   }
   let albedo = albedoSample.rgb;
   let n = normalize(normalSample.xyz * 2.0 - vec3<f32>(1.0));
@@ -4347,9 +4347,24 @@ export class Renderer {
           }
         }
         gpass.end();
-        // Deferred lighting pass: light the G-buffer (albedo + normal/AO) into
-        // the swapchain. Bind group recreated per-frame because the G-buffer
-        // views change on resize.
+        // Sky background pass: fill the swapchain with the procedural sky (or a
+        // neutral clear) so the lighting pass can discard empty-G-buffer pixels
+        // and let the sky show through behind the terrain.
+        const skyPass = encoder.beginRenderPass({
+          label: 'deferred sky pass',
+          colorAttachments: [{ view: colorView, clearValue: { r: 0.02, g: 0.03, b: 0.05, a: 1 }, loadOp: 'clear', storeOp: 'store' }],
+          depthStencilAttachment: { view: depthView, depthReadOnly: true },
+        });
+        if (this.settings.skyEnabled && this.settings.debugView === 0) {
+          skyPass.setBindGroup(0, this.uniformBindGroup);
+          skyPass.setPipeline(this.skyPipeline);
+          skyPass.draw(3);
+        }
+        skyPass.end();
+        // Deferred lighting pass: light the G-buffer (albedo + normal/AO) and
+        // composite over the sky (loadOp 'load'); empty pixels were discarded.
+        // Bind group recreated per-frame because the G-buffer views change on
+        // resize.
         const lightBindGroup = this.device.createBindGroup({
           layout: this.deferredLightBindGroupLayout,
           entries: [
@@ -4361,7 +4376,7 @@ export class Renderer {
         });
         const lpass = encoder.beginRenderPass({
           label: 'deferred lighting pass',
-          colorAttachments: [{ view: colorView, clearValue: { r: 0.02, g: 0.03, b: 0.05, a: 1 }, loadOp: 'clear', storeOp: 'store' }],
+          colorAttachments: [{ view: colorView, loadOp: 'load', storeOp: 'store' }],
           timestampWrites: this.frameGraph.timed('deferred-lighting', 'render', false),
         });
         lpass.setPipeline(this.deferredLightPipeline);
