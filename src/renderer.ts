@@ -23,12 +23,39 @@ import { RenderTargets } from './render_targets.ts';
 
 function roundUp4(n: number): number { return (n + 3) & ~3; }
 
+// Visual quality profiles (Photon Upgrade 9): a single `?visual.profile=<name>`
+// flag bundles the optional deferred passes on/off, so a capture or a low-end run
+// can pick a quality tier without spelling out each `pass.*` flag. Explicit
+// `pass.*` flags still win over the profile (see parseRenderGraphOverrides). The
+// keys are render-graph pass names; absent keys fall back to "enabled".
+const VISUAL_PROFILES: Record<string, Record<string, boolean>> = {
+  // Full Photon look: directional shadows + SSAO + bloom (same as no profile).
+  cinematic: { 'shadow-directional': true, 'deferred-ssao': true, 'deferred-bloom': true },
+  // Drop the costliest screen-space pass (SSAO) but keep shadows + bloom.
+  balanced: { 'shadow-directional': true, 'deferred-ssao': false, 'deferred-bloom': true },
+  // Shadows only — no screen-space ambient occlusion or bloom.
+  performance: { 'shadow-directional': true, 'deferred-ssao': false, 'deferred-bloom': false },
+  // Raw deferred lighting: every optional pass off (debug / lighting reference).
+  flat: { 'shadow-directional': false, 'deferred-ssao': false, 'deferred-bloom': false },
+};
+
+// The active visual profile name from `?visual.profile=`, or null when unset or
+// unrecognized. Surfaced on the overlay mode tag (e.g. `[deferred:performance]`).
+function parseVisualProfile(): string | null {
+  if (typeof location === 'undefined' || !location.search) return null;
+  const value = new URLSearchParams(location.search).get('visual.profile');
+  return value && Object.prototype.hasOwnProperty.call(VISUAL_PROFILES, value) ? value : null;
+}
+
 // Parse `pass.<alias>=0|1` query flags into render-graph overrides keyed by pass
 // name, so optional passes can be force-disabled for capture/debug without
 // touching the settings UI. Only genuinely-optional passes are exposed; the
 // required infrastructure passes (cull, depth pyramid, main forward) always run.
+// A `visual.profile` bundle (if any) seeds the overrides first, then explicit
+// `pass.*` flags override individual passes on top of it.
 function parseRenderGraphOverrides(): Record<string, boolean> {
-  const overrides: Record<string, boolean> = {};
+  const profile = parseVisualProfile();
+  const overrides: Record<string, boolean> = profile ? { ...VISUAL_PROFILES[profile] } : {};
   if (typeof location === 'undefined' || !location.search) return overrides;
   const params = new URLSearchParams(location.search);
   const aliases: Record<string, string> = {
@@ -3181,7 +3208,10 @@ export class Renderer {
     this.format = navigator.gpu.getPreferredCanvasFormat();
     this.frameGraph = new FrameGraph(this.device, this.capabilities.timestampQuery, parseRenderGraphOverrides());
     this.renderGraphMode = parseRenderGraphMode();
-    this.frameGraph.mode = this.renderGraphMode;
+    // Tag the mode with the visual profile (e.g. `deferred:performance`) so the
+    // overlay/automation report shows which quality bundle is active.
+    const visualProfile = parseVisualProfile();
+    this.frameGraph.mode = visualProfile ? `${this.renderGraphMode}:${visualProfile}` : this.renderGraphMode;
     this.renderTargets = new RenderTargets(this.device, {
       depthFormat: DEPTH_FORMAT,
       shadowFormat: DEPTH_FORMAT,
