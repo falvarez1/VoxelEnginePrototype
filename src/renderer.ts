@@ -3037,6 +3037,13 @@ export class Renderer {
     // using this.shadowDepth* unchanged.
     this.shadowDepthTexture = this.renderTargets.shadowDepthTexture;
     this.shadowDepthView = this.renderTargets.shadowDepthView;
+    // Runtime render-graph switch surface (Upgrade 10): call from the dev console
+    // as __stormSetRenderGraph('deferred'|'compat') to toggle without a reload.
+    if (typeof window !== 'undefined') {
+      (window as unknown as { __stormSetRenderGraph?: (mode: string) => void }).__stormSetRenderGraph = (mode: string) => {
+        this.setRenderGraphMode(mode === 'deferred' ? 'deferred' : 'compat');
+      };
+    }
     this.uploadRing = new GpuUploadRing(this.device);
     this.hiZOcclusionCounterBuffer = this.device.createBuffer({
       label: 'hi-z occlusion counters',
@@ -4374,6 +4381,15 @@ export class Renderer {
     const visible = Math.max(0, Math.trunc(this.hiZOcclusion.tested));
     const target = Math.ceil(visible * TERRAIN_INDIRECT_REPLAY_VISIBLE_MULTIPLIER + TERRAIN_INDIRECT_REPLAY_HEADROOM_SLOTS);
     return Math.min(slots, maxSlots, Math.max(TERRAIN_INDIRECT_REPLAY_MIN_SLOTS, target));
+  }
+
+  // Switch render-graph mode at runtime (Photon Upgrade 10: profile switching
+  // without resetting game/edit state). Lazily allocates the deferred G-buffer
+  // the first time deferred is selected, so compat sessions never pay for it.
+  setRenderGraphMode(mode: RenderGraphMode): void {
+    this.renderGraphMode = mode;
+    this.frameGraph.mode = mode;
+    if (mode === 'deferred') this.renderTargets.enableDeferred();
   }
 
   render(camera: FlyCamera, viewProj: Mat4, timeSeconds: number): RendererStats {

@@ -38,7 +38,8 @@ export class RenderTargets {
   private readonly shadowTex: GPUTexture;
   private readonly shadowView: GPUTextureView;
   // Deferred G-buffer attachments (canvas-sized, allocated only when deferred).
-  readonly deferred: boolean;
+  // Mutable so the render-graph mode can be switched at runtime (lazy alloc).
+  deferred: boolean;
   readonly gbufferAlbedoFormat: GPUTextureFormat;
   readonly gbufferNormalFormat: GPUTextureFormat;
   readonly gbufferWorldFormat: GPUTextureFormat;
@@ -84,37 +85,43 @@ export class RenderTargets {
       format: this.depthFormat,
       usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING,
     });
-    if (this.deferred) {
-      this.gbufferAlbedoTex?.destroy();
-      this.gbufferNormalTex?.destroy();
-      this.gbufferAlbedoTex = this.device.createTexture({
-        label: 'gbuffer albedo',
-        size: [width, height],
-        format: this.gbufferAlbedoFormat,
-        usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING,
-      });
-      this.gbufferNormalTex = this.device.createTexture({
-        label: 'gbuffer normal',
-        size: [width, height],
-        format: this.gbufferNormalFormat,
-        usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING,
-      });
-      this.gbufferWorldTex?.destroy();
-      this.gbufferWorldTex = this.device.createTexture({
-        label: 'gbuffer world',
-        size: [width, height],
-        format: this.gbufferWorldFormat,
-        usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING,
-      });
-      this.sceneColorTex?.destroy();
-      this.sceneColorTex = this.device.createTexture({
-        label: 'scene color (deferred post)',
-        size: [width, height],
-        format: this.sceneColorFormat,
-        usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING,
-      });
-    }
+    if (this.deferred) this.allocateDeferredTargets();
     return true;
+  }
+
+  // Allocate the deferred G-buffer + scene-colour targets at the current size.
+  // Shared by resizeDepth and enableDeferred (runtime mode switch).
+  private allocateDeferredTargets(): void {
+    const size: [number, number] = [this.width, this.height];
+    this.gbufferAlbedoTex?.destroy();
+    this.gbufferAlbedoTex = this.device.createTexture({
+      label: 'gbuffer albedo', size, format: this.gbufferAlbedoFormat,
+      usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING,
+    });
+    this.gbufferNormalTex?.destroy();
+    this.gbufferNormalTex = this.device.createTexture({
+      label: 'gbuffer normal', size, format: this.gbufferNormalFormat,
+      usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING,
+    });
+    this.gbufferWorldTex?.destroy();
+    this.gbufferWorldTex = this.device.createTexture({
+      label: 'gbuffer world', size, format: this.gbufferWorldFormat,
+      usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING,
+    });
+    this.sceneColorTex?.destroy();
+    this.sceneColorTex = this.device.createTexture({
+      label: 'scene color (deferred post)', size, format: this.sceneColorFormat,
+      usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING,
+    });
+  }
+
+  // Turn on the deferred targets at runtime (lazy: compat sessions never pay the
+  // G-buffer memory until deferred is first selected). Safe to call repeatedly.
+  enableDeferred(): void {
+    this.deferred = true;
+    if (this.width > 0 && this.height > 0 && !this.gbufferAlbedoTex) {
+      this.allocateDeferredTargets();
+    }
   }
 
   get depthTexture(): GPUTexture | null { return this.depthTex; }
