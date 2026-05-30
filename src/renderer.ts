@@ -2585,11 +2585,113 @@ fn fs_main(input: VertexOut) -> @location(0) vec4<f32> {
   let waterFog = mix(vec3<f32>(0.36, 0.50, 0.60), vec3<f32>(0.96, 0.62, 0.28), clamp(sunSide * 0.66 + lowSun * 0.08, 0.0, 1.0));
   color = mix(color, waterFog, fog * 0.86);
   color = pow((color * scene.visual.x) / (color * scene.visual.x + vec3<f32>(1.0)), vec3<f32>(1.0 / 2.2));
-  // Depth-based opacity: deep channel water stays near-opaque; shallows let the
-  // lit riverbed show through. The compat water pipeline is opaque (no blend) so
-  // it ignores this alpha; only the deferred water pipeline alpha-blends with it.
-  let waterAlpha = mix(0.93, 0.60, shallow);
-  return vec4<f32>(color, waterAlpha);
+  return vec4<f32>(color, 1.0);
+}
+`;
+
+// Deferred-only water (Photon Upgrade 7 stage 2: refraction). A byte-for-byte copy
+// of WATER_SHADER's surface shading, plus a refraction lookup: it samples a
+// snapshot of the lit scene (sky + deferred-lit terrain) taken BEFORE the water
+// draws, at a wave-distorted screen UV, and mixes that riverbed in under the water
+// tint — strongest in the shallows, fading to opaque in the deep channel and at
+// distance. The compat WATER_SHADER stays untouched (no extra bindings) so the
+// default forward water pipeline is byte-identical; this lives entirely behind
+// renderGraph=deferred. Duplicated (not extracted) per the project's shader rule.
+const DEFERRED_WATER_SHADER = /* wgsl */`
+${SCENE_WGSL}
+// Refraction source: the lit scene behind the water (group 1, deferred-only).
+@group(1) @binding(0) var refractTex: texture_2d<f32>;
+@group(1) @binding(1) var refractSamp: sampler;
+struct VertexIn {
+  @location(0) position: vec3<f32>,
+  @location(1) normal: vec3<f32>,
+  @location(2) material: f32,
+  @location(3) ao: f32,
+};
+struct VertexOut {
+  @builtin(position) clip: vec4<f32>,
+  @location(0) world: vec3<f32>,
+  @location(1) edge: f32,
+  @location(2) ndcPos: vec4<f32>,
+};
+@vertex
+fn vs_main(input: VertexIn) -> VertexOut {
+  var pos = input.position;
+  let t = scene.params.x;
+  let centerWeight = 1.0 - clamp(input.ao, 0.0, 1.0);
+  pos.y += (sin(pos.x * 0.16 + t * 1.35) * 0.020 + sin(pos.z * 0.12 - t * 1.0) * 0.016) * centerWeight;
+  var out: VertexOut;
+  out.world = pos;
+  out.edge = input.ao;
+  out.clip = scene.viewProjRel * vec4<f32>(pos - scene.camera.xyz, 1.0);
+  // Carry clip-space position so the fragment can reconstruct its own screen UV
+  // (perspective-correct: divide the interpolated value by its interpolated w).
+  out.ndcPos = out.clip;
+  return out;
+}
+fn water_wave_normal(p: vec2<f32>, t: f32) -> vec3<f32> {
+  var slope = vec2<f32>(0.0, 0.0);
+  let dA = vec2<f32>(0.86, 0.50);
+  let phA = dot(p, dA) * 0.075 + t * 1.05;
+  slope = slope + dA * (0.30 * 0.075 * cos(phA));
+  let dB = vec2<f32>(-0.30, 0.95);
+  let phB = dot(p, dB) * 0.128 - t * 0.80;
+  slope = slope + dB * (0.18 * 0.128 * cos(phB));
+  return normalize(vec3<f32>(-slope.x, 1.0, -slope.y));
+}
+
+@fragment
+fn fs_main(input: VertexOut) -> @location(0) vec4<f32> {
+  let t = scene.params.x;
+  let sunDir = normalize(scene.sun.xyz);
+  let sun = max(sunDir.y, 0.0);
+  let viewDir = normalize(scene.camera.xyz - input.world);
+  let n = water_wave_normal(input.world.xz, t);
+  let ndv = max(dot(n, viewDir), 0.0);
+  let fresnel = pow(1.0 - ndv, 5.0);
+
+  let shallow = clamp(input.edge, 0.0, 1.0);
+  let deepColor = vec3<f32>(0.010, 0.064, 0.104);
+  let shallowColor = vec3<f32>(0.070, 0.205, 0.224);
+  var color = mix(deepColor, shallowColor, shallow * 0.82);
+  color = mix(color, deepColor * 0.86, ndv * 0.30);
+
+  let skyTint = mix(vec3<f32>(0.105, 0.235, 0.320), vec3<f32>(0.455, 0.585, 0.715), sun);
+  color = mix(color, skyTint, fresnel * 0.66);
+
+  let refl = reflect(-sunDir, n);
+  let glint = pow(max(dot(refl, viewDir), 0.0), 80.0) * (0.35 + sun * 0.55);
+  color = color + vec3<f32>(1.55, 1.16, 0.66) * min(glint, 1.6);
+
+  let bank = smoothstep(0.82, 1.0, shallow);
+  color = mix(color, vec3<f32>(0.32, 0.44, 0.48), bank * 0.16);
+
+  let d = distance(scene.camera.xyz, input.world);
+  let fog = clamp(1.0 - exp(-max(d - 220.0, 0.0) * 0.00040 * scene.params.y * max(scene.visual.y, 0.0)), 0.0, 0.34);
+  let sunSide = pow(clamp(dot(normalize(input.world - scene.camera.xyz), sunDir) * 0.5 + 0.5, 0.0, 1.0), 3.0);
+  let lowSun = clamp(1.0 - sunDir.y * 1.35, 0.0, 1.0);
+  let waterFog = mix(vec3<f32>(0.36, 0.50, 0.60), vec3<f32>(0.96, 0.62, 0.28), clamp(sunSide * 0.66 + lowSun * 0.08, 0.0, 1.0));
+  color = mix(color, waterFog, fog * 0.86);
+  color = pow((color * scene.visual.x) / (color * scene.visual.x + vec3<f32>(1.0)), vec3<f32>(1.0 / 2.2));
+
+  // Refraction: reconstruct this fragment's screen UV from the clip varying, wobble
+  // it with a calm low-frequency ripple (a touch more in the shallows), and sample
+  // the lit riverbed snapshot. The unperturbed sample lands exactly on the pixel
+  // behind the surface, so distort=0 reproduces the bed precisely.
+  let ndc = input.ndcPos.xy / input.ndcPos.w;
+  let screenUV = ndc * vec2<f32>(0.5, -0.5) + vec2<f32>(0.5, 0.5);
+  let ripple = vec2<f32>(
+    sin(input.world.x * 0.55 + t * 1.3) + sin(input.world.z * 0.47 - t * 1.05),
+    cos(input.world.z * 0.52 + t * 1.15) + sin(input.world.x * 0.43 - t * 0.9)
+  ) * 0.5;
+  let distortAmt = 0.0045 + shallow * 0.0075;
+  let refrUV = clamp(screenUV + ripple * distortAmt, vec2<f32>(0.0, 0.0), vec2<f32>(1.0, 1.0));
+  let bed = textureSampleLevel(refractTex, refractSamp, refrUV, 0.0).rgb;
+  // Water body opacity: deep channel hides the bed, shallows reveal it; the fog
+  // term re-opaques distant water so refraction does not read as noise far off.
+  let bodyOpacity = clamp(mix(0.88, 0.34, shallow) + fog, 0.0, 1.0);
+  color = mix(bed, color, bodyOpacity);
+  return vec4<f32>(color, 1.0);
 }
 `;
 
@@ -2937,9 +3039,11 @@ export class Renderer {
   deferredLightPipeline!: GPURenderPipeline;
   deferredLightBindGroupLayout!: GPUBindGroupLayout;
   bloomPipeline!: GPURenderPipeline;
-  // Alpha-blended water for the deferred overlay (shows the lit riverbed through
-  // the shallows). Compat keeps the opaque waterPipeline.
+  // Refracting water for the deferred overlay (samples the lit riverbed behind the
+  // surface so the shallows show a gently-distorted bed). Compat keeps the plain
+  // opaque waterPipeline. The group-1 layout binds the refraction-source snapshot.
   deferredWaterPipeline!: GPURenderPipeline;
+  deferredWaterBindGroupLayout!: GPUBindGroupLayout;
   shadowCasterPipeline!: GPURenderPipeline;
   shadowVegetationCasterPipeline!: GPURenderPipeline;
   shadowCasterBindGroupLayout!: GPUBindGroupLayout;
@@ -3487,22 +3591,25 @@ export class Renderer {
       depthStencil: { format: DEPTH_FORMAT, depthWriteEnabled: true, depthCompare: 'less' },
     });
 
-    // Deferred water: same shader, but alpha-blends over the lit terrain already
-    // in the scene-colour target so the riverbed shows through the shallows.
+    // Deferred water: a refracting variant of the water shader. It samples the lit
+    // riverbed snapshot (group 1) and composites it in-shader, so it draws opaque
+    // (the see-through look comes from the refraction mix, not alpha blending).
+    const deferredWaterModule = this.createShaderModuleChecked('deferred water shader', DEFERRED_WATER_SHADER);
+    this.deferredWaterBindGroupLayout = this.device.createBindGroupLayout({
+      label: 'deferred water bind group layout',
+      entries: [
+        { binding: 0, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'float' } },
+        { binding: 1, visibility: GPUShaderStage.FRAGMENT, sampler: { type: 'filtering' } },
+      ],
+    });
     this.deferredWaterPipeline = this.device.createRenderPipeline({
       label: 'deferred water pipeline',
-      layout: pipelineLayout,
-      vertex: { module: waterModule, entryPoint: 'vs_main', buffers: [floatTerrainVertexLayout] },
+      layout: this.device.createPipelineLayout({ bindGroupLayouts: [bindGroupLayout, this.deferredWaterBindGroupLayout] }),
+      vertex: { module: deferredWaterModule, entryPoint: 'vs_main', buffers: [floatTerrainVertexLayout] },
       fragment: {
-        module: waterModule,
+        module: deferredWaterModule,
         entryPoint: 'fs_main',
-        targets: [{
-          format: this.format,
-          blend: {
-            color: { srcFactor: 'src-alpha', dstFactor: 'one-minus-src-alpha', operation: 'add' },
-            alpha: { srcFactor: 'one', dstFactor: 'one-minus-src-alpha', operation: 'add' },
-          },
-        }],
+        targets: [{ format: this.format }],
       },
       primitive: { topology: 'triangle-list', cullMode: 'none' },
       depthStencil: { format: DEPTH_FORMAT, depthWriteEnabled: true, depthCompare: 'less' },
@@ -4762,6 +4869,21 @@ export class Renderer {
         // are omitted here until the deferred path is the default.
         const drawWater = this.settings.waterEnabled && this.water !== null;
         const drawVeg = this.settings.vegetationEnabled && vegetationBatchBuffer !== null && vegetationInstances > 0;
+        // Refracting water needs the offscreen scene target (so it can be snapshotted
+        // as the refraction source); when present, copy the lit scene before the
+        // water draws. Falls back to the plain water pipeline if there is no scene
+        // target (direct-to-swapchain).
+        const refractionTex = this.renderTargets.refractionSourceTexture;
+        const refractWater = drawWater && sceneColorTex !== null && refractionTex !== null;
+        if (refractWater && sceneColorTex && refractionTex) {
+          // Snapshot sky + deferred-lit terrain before the water overlay, so the
+          // refraction lookup samples the riverbed and never the water itself.
+          encoder.copyTextureToTexture(
+            { texture: sceneColorTex },
+            { texture: refractionTex },
+            { width: sceneColorTex.width, height: sceneColorTex.height, depthOrArrayLayers: 1 },
+          );
+        }
         if (drawWater || drawVeg) {
           const opass = encoder.beginRenderPass({
             label: 'deferred forward overlay pass',
@@ -4771,9 +4893,20 @@ export class Renderer {
           });
           opass.setBindGroup(0, this.uniformBindGroup);
           if (drawWater && this.water) {
-            // Deferred water alpha-blends over the lit terrain in the scene-colour
-            // target, so the riverbed shows through the shallows.
-            opass.setPipeline(this.deferredWaterPipeline);
+            if (refractWater && refractionTex) {
+              // Refracting water: samples the riverbed snapshot (group 1) and
+              // composites the gently-distorted bed in-shader (opaque output).
+              opass.setPipeline(this.deferredWaterPipeline);
+              opass.setBindGroup(1, this.device.createBindGroup({
+                layout: this.deferredWaterBindGroupLayout,
+                entries: [
+                  { binding: 0, resource: refractionTex.createView() },
+                  { binding: 1, resource: this.compositeSampler },
+                ],
+              }));
+            } else {
+              opass.setPipeline(this.waterPipeline);
+            }
             opass.setVertexBuffer(0, this.water.vertexBuffer);
             opass.setIndexBuffer(this.water.indexBuffer, 'uint32');
             opass.drawIndexed(this.water.indexCount);

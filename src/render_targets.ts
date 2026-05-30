@@ -48,6 +48,10 @@ export class RenderTargets {
   private gbufferNormalTex: GPUTexture | null = null;
   private gbufferWorldTex: GPUTexture | null = null;
   private sceneColorTex: GPUTexture | null = null;
+  // Snapshot of the lit scene (sky + deferred-lit terrain) taken before the water
+  // overlay draws, so the deferred water shader can sample the riverbed behind it
+  // for refraction (Upgrade 7 stage 2). Same format as sceneColor.
+  private refractionSourceTex: GPUTexture | null = null;
   width = 0;
   height = 0;
 
@@ -111,7 +115,14 @@ export class RenderTargets {
     this.sceneColorTex?.destroy();
     this.sceneColorTex = this.device.createTexture({
       label: 'scene color (deferred post)', size, format: this.sceneColorFormat,
-      usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING,
+      // COPY_SRC so the lit scene can be snapshotted into the refraction source
+      // before the water overlay draws.
+      usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_SRC,
+    });
+    this.refractionSourceTex?.destroy();
+    this.refractionSourceTex = this.device.createTexture({
+      label: 'refraction source (deferred water)', size, format: this.sceneColorFormat,
+      usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
     });
   }
 
@@ -131,6 +142,7 @@ export class RenderTargets {
   get gbufferNormalTexture(): GPUTexture | null { return this.gbufferNormalTex; }
   get gbufferWorldTexture(): GPUTexture | null { return this.gbufferWorldTex; }
   get sceneColorTexture(): GPUTexture | null { return this.sceneColorTex; }
+  get refractionSourceTexture(): GPUTexture | null { return this.refractionSourceTex; }
 
   destroy(): void {
     this.depthTex?.destroy();
@@ -143,6 +155,8 @@ export class RenderTargets {
     this.gbufferWorldTex = null;
     this.sceneColorTex?.destroy();
     this.sceneColorTex = null;
+    this.refractionSourceTex?.destroy();
+    this.refractionSourceTex = null;
     this.shadowTex.destroy();
   }
 }
