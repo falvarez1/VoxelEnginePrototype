@@ -1473,6 +1473,30 @@ fn cinematic_light(color: vec3<f32>, n: vec3<f32>, world: vec3<f32>, ao: f32) ->
   let graded = max((lit - vec3<f32>(0.022)) * (1.56 + lowSun * 0.24) + vec3<f32>(0.022), vec3<f32>(0.0));
   return graded * mix(0.26, 1.0, ao);
 }
+// procedural_forest_shadow copied verbatim from TERRAIN_SHADER (uses the noise
+// chain above). m.y/biome is approximated in the caller since only id + snow are
+// in the G-buffer; it only modulates this subtle streak.
+fn procedural_forest_shadow(world: vec3<f32>, n: vec3<f32>, m: vec4<f32>) -> f32 {
+  let grassReceiver = 1.0 - step(0.5, abs(m.x - 0.0));
+  let mudReceiver = 1.0 - step(0.5, abs(m.x - 3.0));
+  let receiverMaterial = max(grassReceiver, mudReceiver * 0.58);
+  let receiverSlope = smoothstep(0.28, 0.74, n.y);
+  let snowClear = 1.0 - smoothstep(0.20, 0.72, m.w);
+  var shadowDir = vec2<f32>(-scene.sun.x, -scene.sun.z);
+  shadowDir = shadowDir / max(length(shadowDir), 0.001);
+  let sideDir = vec2<f32>(-shadowDir.y, shadowDir.x);
+  let p = vec2<f32>(dot(world.xz, sideDir), dot(world.xz, shadowDir));
+  let forestPatch = smoothstep(-0.28, 0.42, fbm2(world.xz * 0.010 + vec2<f32>(12.0, -9.0)) + m.y * 0.26 - m.w * 0.52);
+  let broadCanopy = smoothstep(-0.40, 0.50, fbm2(world.xz * 0.0046 + vec2<f32>(-36.0, 18.0)) - m.w * 0.38);
+  let longBands = smoothstep(0.06, 0.78, fast_noise2(vec2<f32>(p.x * 0.054, p.y * 0.013)));
+  let brokenBands = smoothstep(-0.04, 0.70, fast_noise2(vec2<f32>(p.x * 0.138 + 17.0, p.y * 0.030 - 11.0)));
+  let canopyBreakup = smoothstep(-0.24, 0.78, fbm2(vec2<f32>(p.x * 0.085, p.y * 0.052) + vec2<f32>(21.0, -8.0)));
+  let lowSun = saturate(1.24 - scene.sun.y * 1.78);
+  let distanceFade = 1.0 - smoothstep(3000.0, 4550.0, distance(scene.camera.xyz, world));
+  let cover = max(forestPatch, broadCanopy * 0.72);
+  let valleyGradient = smoothstep(-900.0, 820.0, scene.camera.z - world.z);
+  return clamp(receiverMaterial * receiverSlope * snowClear * cover * longBands * brokenBands * (0.36 + canopyBreakup * 0.84) * lowSun * distanceFade * (1.62 + valleyGradient * 0.34), 0.0, 0.94);
+}
 // tone_map + apply_atmosphere are copied verbatim from TERRAIN_SHADER so the
 // deferred terrain gets the same cinematic grade + aerial distance haze as the
 // forward path. (They have no noise dependencies, so this stays a small copy;
@@ -1530,9 +1554,21 @@ fn fs_main(input: VOut) -> @location(0) vec4<f32> {
   let albedo = albedoSample.rgb;
   let n = normalize(normalSample.xyz * 2.0 - vec3<f32>(1.0));
   let ao = normalSample.w;
-  // Forward terrain lighting chain (sans real sun shadow): cinematic_light ->
-  // aerial-perspective haze -> cinematic tone/grade.
-  let lit = cinematic_light(albedo, n, world, ao);
+  // Reconstruct material: id from albedo.a, snow from world.w; biome/wetness are
+  // not in the G-buffer (approximated — they only modulate the subtle forest
+  // streak). This mirrors the forward fs_main cinematic chain exactly.
+  let m = vec4<f32>(round(albedoSample.a * 255.0), 0.5, 0.0, worldSample.w);
+  var lit = cinematic_light(albedo, n, world, ao);
+  let snowPreserve = max(m.w, 1.0 - step(0.5, abs(m.x - 2.0)));
+  lit = mix(lit, lit * vec3<f32>(0.84, 1.00, 1.22) + vec3<f32>(0.05, 0.075, 0.10) * snowPreserve, snowPreserve * 0.42);
+  let grassPreserve = 1.0 - step(0.5, abs(m.x));
+  lit = mix(lit, lit * vec3<f32>(0.84, 1.10, 0.78), grassPreserve * 0.18);
+  var forestShadow = procedural_forest_shadow(world, n, m);
+  if (shadow.params.x > 0.5) {
+    let realCoverage = 1.0 - smoothstep(520.0, 980.0, distance(scene.camera.xyz, world));
+    forestShadow = forestShadow * (1.0 - realCoverage);
+  }
+  lit = lit * (1.0 - forestShadow);
   let hazed = apply_atmosphere(lit, world);
   return vec4<f32>(tone_map(hazed), 1.0);
 }`;
@@ -1901,9 +1937,11 @@ fn fs_gbuffer(input: VertexOut) -> GBufferOut {
   var out: GBufferOut;
   out.albedo = vec4<f32>(material_color(input.material, input.world, n), input.material.x / 255.0);
   out.normalAo = vec4<f32>(n * 0.5 + vec3<f32>(0.5), input.ao);
-  // Camera-relative world position: stored small (world - camera) so an f16
-  // target keeps usable precision at this engine's large absolute coordinates.
-  out.worldRel = vec4<f32>(input.world - scene.camera.xyz, 1.0);
+  // Camera-relative world position (stored small so an f16 target keeps usable
+  // precision at large absolute coords). The .w channel carries the snow mask so
+  // the deferred lighting can reproduce the forward snow-preserve tint + forest
+  // shadow without a dedicated material target (id is in albedo.a).
+  out.worldRel = vec4<f32>(input.world - scene.camera.xyz, input.material.w);
   return out;
 }
 
