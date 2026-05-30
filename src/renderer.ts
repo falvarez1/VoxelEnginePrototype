@@ -1639,8 +1639,10 @@ fn fs_main(input: VOut) -> @location(0) vec4<f32> {
   lit = lit * (1.0 - forestShadow);
   // Screen-space AO: deepens valley/crease/contact occlusion the coarse vertex
   // AO misses. A deferred-path effect beyond the forward baseline (Upgrade 5),
-  // gated by shadow.params.w (the pass.ssao toggle).
-  if (shadow.params.w > 0.5) {
+  // gated by shadow.params.w (the pass.ssao toggle). Skipped beyond ~240m
+  // (camera-relative) where the AO is imperceptible and hazed — most of the
+  // frame is distant, so this cuts the AO-tap cost sharply with no visible loss.
+  if (shadow.params.w > 0.5 && dot(worldSample.xyz, worldSample.xyz) < 240.0 * 240.0) {
     lit = lit * compute_ssao(input.uv, worldSample.xyz, n);
   }
   let hazed = apply_atmosphere(lit, world);
