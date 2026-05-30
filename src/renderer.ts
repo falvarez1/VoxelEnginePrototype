@@ -1365,12 +1365,43 @@ ${SCENE_WGSL}
 @group(0) @binding(2) var normalTex: texture_2d<f32>;
 @group(0) @binding(3) var gbSampler: sampler;
 @group(0) @binding(4) var worldTex: texture_2d<f32>;
+// Shadow group (matches the forward shadow-sample layout) so the deferred pass
+// can sample the same sun shadow map the shadow caster pass already rendered.
+struct ShadowData {
+  lightViewProj: mat4x4<f32>,
+  params: vec4<f32>,
+};
+@group(1) @binding(0) var<uniform> shadow: ShadowData;
+@group(1) @binding(1) var shadowDepth: texture_depth_2d;
+@group(1) @binding(2) var shadowSampler: sampler_comparison;
 ${WGSL_HELPERS}
+fn sample_sun_shadow(world: vec3<f32>, n: vec3<f32>) -> f32 {
+  if (shadow.params.x < 0.5) { return 1.0; }
+  let lightClip = shadow.lightViewProj * vec4<f32>(world, 1.0);
+  if (lightClip.w <= 0.0) { return 1.0; }
+  let ndc = lightClip.xyz / lightClip.w;
+  if (ndc.x < -1.0 || ndc.x > 1.0 || ndc.y < -1.0 || ndc.y > 1.0 || ndc.z > 1.0) { return 1.0; }
+  let uv = vec2<f32>(ndc.x * 0.5 + 0.5, ndc.y * -0.5 + 0.5);
+  let sunDir = normalize(scene.sun.xyz);
+  let slope = clamp(1.0 - max(dot(n, sunDir), 0.0), 0.0, 1.0);
+  let bias = shadow.params.z * (1.0 + slope * 4.0);
+  let compareDepth = ndc.z - bias;
+  let texel = shadow.params.y;
+  var sum = 0.0;
+  for (var oy = -1; oy <= 1; oy = oy + 1) {
+    for (var ox = -1; ox <= 1; ox = ox + 1) {
+      let offset = vec2<f32>(f32(ox), f32(oy)) * texel;
+      sum = sum + textureSampleCompareLevel(shadowDepth, shadowSampler, uv + offset, compareDepth);
+    }
+  }
+  return sum / 9.0;
+}
 // Noise chain + cinematic_light copied verbatim from TERRAIN_SHADER so the
 // deferred terrain gets the same warm sun, landform shade, noise-driven broad
-// terrain shadow, golden slope, and grade. The ONLY change is sample_sun_shadow
-// -> 1.0 (real sun shadows need the shadow map bound into this pass; follow-up).
-// Duplicated rather than extracted so compat's TERRAIN_SHADER stays untouched.
+// terrain shadow, golden slope, grade, AND real sun shadow (sample_sun_shadow
+// above samples the same shadow map). Duplicated rather than extracted so
+// compat's TERRAIN_SHADER stays untouched. (Forward's separate procedural
+// forest-shadow streak blend still needs material in the G-buffer; follow-up.)
 fn hash_u32(x: u32) -> u32 {
   var h = x;
   h = h ^ (h >> 16u);
@@ -1432,7 +1463,7 @@ fn cinematic_light(color: vec3<f32>, n: vec3<f32>, world: vec3<f32>, ao: f32) ->
   let shadowCast = smoothstep(-0.18, 0.76, fbm2(world.xz * 0.010 + vec2<f32>(sunDir.x, sunDir.z) * world.y * 0.060 + vec2<f32>(31.0, -17.0)));
   let grazingShadow = mix(0.055, 1.18, max(hollow * 0.64, shadowCast * 0.92)) * mix(0.22, 1.0, direct * 0.70 + saturate(n.y) * 0.30);
   let sunWash = warmSun * lowSun * (0.06 + pow(saturate(dot(normalize(world - scene.camera.xyz), sunDir)) * 0.5 + 0.5, 2.7) * 0.17);
-  let sunShadow = 1.0;
+  let sunShadow = sample_sun_shadow(world, n);
   var lit = color * (skyAmbient * 0.20 + warmSun * shadowShape * landformShade * grazingShadow * sunShadow + groundBounce + rim + sunWash);
   let goldenSlope = smoothstep(0.08, 0.86, direct + saturate(n.y) * 0.18) * lowSun;
   lit = lit + color * warmSun * goldenSlope * 0.20 * sunShadow;
@@ -3172,7 +3203,7 @@ export class Renderer {
     });
     this.deferredLightPipeline = this.device.createRenderPipeline({
       label: 'deferred lighting pipeline',
-      layout: this.device.createPipelineLayout({ bindGroupLayouts: [this.deferredLightBindGroupLayout] }),
+      layout: this.device.createPipelineLayout({ bindGroupLayouts: [this.deferredLightBindGroupLayout, this.shadowSampleBindGroupLayout] }),
       vertex: { module: deferredLightModule, entryPoint: 'vs_main' },
       fragment: { module: deferredLightModule, entryPoint: 'fs_main', targets: [{ format: this.format }] },
       primitive: { topology: 'triangle-list', cullMode: 'none' },
@@ -4498,6 +4529,7 @@ export class Renderer {
         });
         lpass.setPipeline(this.deferredLightPipeline);
         lpass.setBindGroup(0, lightBindGroup);
+        lpass.setBindGroup(1, this.shadowSampleBindGroup);
         lpass.draw(3);
         lpass.end();
         // Forward overlay (water + vegetation) composited over the deferred-lit
