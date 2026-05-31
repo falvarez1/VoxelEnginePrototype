@@ -52,6 +52,11 @@ export class RenderTargets {
   // overlay draws, so the deferred water shader can sample the riverbed behind it
   // for refraction (Upgrade 7 stage 2). Same format as sceneColor.
   private refractionSourceTex: GPUTexture | null = null;
+  // Screen-space AO targets (Upgrade 5 blur): the SSAO pass writes raw AO here,
+  // a box-blur pass writes the smoothed AO that the lighting pass samples.
+  // Single-channel (r8unorm); canvas-sized; deferred-only.
+  private ssaoRawTex: GPUTexture | null = null;
+  private ssaoBlurTex: GPUTexture | null = null;
   width = 0;
   height = 0;
 
@@ -124,6 +129,16 @@ export class RenderTargets {
       label: 'refraction source (deferred water)', size, format: this.sceneColorFormat,
       usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
     });
+    this.ssaoRawTex?.destroy();
+    this.ssaoRawTex = this.device.createTexture({
+      label: 'ssao raw', size, format: 'r8unorm',
+      usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING,
+    });
+    this.ssaoBlurTex?.destroy();
+    this.ssaoBlurTex = this.device.createTexture({
+      label: 'ssao blurred', size, format: 'r8unorm',
+      usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING,
+    });
   }
 
   // Turn on the deferred targets at runtime (lazy: compat sessions never pay the
@@ -143,6 +158,8 @@ export class RenderTargets {
   get gbufferWorldTexture(): GPUTexture | null { return this.gbufferWorldTex; }
   get sceneColorTexture(): GPUTexture | null { return this.sceneColorTex; }
   get refractionSourceTexture(): GPUTexture | null { return this.refractionSourceTex; }
+  get ssaoRawTexture(): GPUTexture | null { return this.ssaoRawTex; }
+  get ssaoBlurTexture(): GPUTexture | null { return this.ssaoBlurTex; }
 
   destroy(): void {
     this.depthTex?.destroy();
@@ -157,6 +174,10 @@ export class RenderTargets {
     this.sceneColorTex = null;
     this.refractionSourceTex?.destroy();
     this.refractionSourceTex = null;
+    this.ssaoRawTex?.destroy();
+    this.ssaoRawTex = null;
+    this.ssaoBlurTex?.destroy();
+    this.ssaoBlurTex = null;
     this.shadowTex.destroy();
   }
 }

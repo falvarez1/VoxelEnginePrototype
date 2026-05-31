@@ -1433,6 +1433,92 @@ fn fs_main(input: VOut) -> @location(0) vec4<f32> {
   return vec4<f32>(graded * vignette, 1.0);
 }`;
 
+// Screen-space AO compute pass (Photon Upgrade 5 blur, stage 1 of 3). Computes
+// raw SSAO from the G-buffer (camera-relative world + normal) into a single-
+// channel target so a following box-blur pass can smooth the per-pixel rotation
+// noise the 8-tap estimate leaves before the lighting pass multiplies it in.
+// Distant pixels short-circuit to 1.0 (no occlusion) to match the lighting pass's
+// near-only gate, and to keep the per-pixel tap cost off most of the frame.
+const SSAO_SHADER = /* wgsl */`
+${SCENE_WGSL}
+@group(0) @binding(1) var normalTex: texture_2d<f32>;
+@group(0) @binding(2) var worldTex: texture_2d<f32>;
+@group(0) @binding(3) var gbSampler: sampler;
+struct VOut {
+  @builtin(position) clip: vec4<f32>,
+  @location(0) uv: vec2<f32>,
+};
+@vertex
+fn vs_main(@builtin(vertex_index) vid: u32) -> VOut {
+  var pos = array<vec2<f32>, 3>(vec2<f32>(-1.0, -1.0), vec2<f32>(3.0, -1.0), vec2<f32>(-1.0, 3.0));
+  let xy = pos[vid];
+  var out: VOut;
+  out.clip = vec4<f32>(xy, 0.0, 1.0);
+  out.uv = vec2<f32>(xy.x * 0.5 + 0.5, 1.0 - (xy.y * 0.5 + 0.5));
+  return out;
+}
+@fragment
+fn fs_main(input: VOut) -> @location(0) vec4<f32> {
+  let normalSample = textureSampleLevel(normalTex, gbSampler, input.uv, 0.0);
+  if (dot(normalSample.xyz, normalSample.xyz) < 0.0001) { return vec4<f32>(1.0); }
+  let worldRel = textureSampleLevel(worldTex, gbSampler, input.uv, 0.0).xyz;
+  if (dot(worldRel, worldRel) >= 240.0 * 240.0) { return vec4<f32>(1.0); }
+  let n = normalize(normalSample.xyz * 2.0 - vec3<f32>(1.0));
+  let radius = 16.0;
+  var occ = 0.0;
+  var count = 0.0;
+  let rot = fract(sin(dot(input.uv * 1024.0, vec2<f32>(12.9898, 78.233))) * 43758.5453) * 6.2831853;
+  for (var i = 0; i < 8; i = i + 1) {
+    let ang = rot + f32(i) * 0.7853982;
+    let r = (0.30 + 0.70 * (f32(i) + 1.0) / 8.0) * 0.020;
+    let suv = input.uv + vec2<f32>(cos(ang), sin(ang)) * r;
+    let sNormal = textureSampleLevel(normalTex, gbSampler, suv, 0.0);
+    if (dot(sNormal.xyz, sNormal.xyz) < 0.0001) { continue; }
+    let sWorldRel = textureSampleLevel(worldTex, gbSampler, suv, 0.0).xyz;
+    let toS = sWorldRel - worldRel;
+    let dist = length(toS);
+    if (dist < 0.05 || dist > radius) { continue; }
+    occ += max(dot(n, toS / dist) - 0.1, 0.0) * (1.0 - dist / radius);
+    count += 1.0;
+  }
+  if (count < 1.0) { return vec4<f32>(1.0); }
+  return vec4<f32>(clamp(1.0 - (occ / count) * 1.8, 0.4, 1.0));
+}`;
+
+// SSAO box-blur pass (Photon Upgrade 5 blur, stage 2 of 3). A 4x4 box blur over
+// the raw AO removes the per-pixel rotation noise so the AO reads as soft contact
+// darkening rather than grain. Plain (non-bilateral): AO is low-frequency and a
+// little cross-edge softening looks natural, and it avoids bilateral tuning that
+// is hard to validate offline. Reuses the composite (texture+sampler) layout.
+const AO_BLUR_SHADER = /* wgsl */`
+@group(0) @binding(0) var aoTex: texture_2d<f32>;
+@group(0) @binding(1) var aoSampler: sampler;
+struct VOut {
+  @builtin(position) clip: vec4<f32>,
+  @location(0) uv: vec2<f32>,
+};
+@vertex
+fn vs_main(@builtin(vertex_index) vid: u32) -> VOut {
+  var pos = array<vec2<f32>, 3>(vec2<f32>(-1.0, -1.0), vec2<f32>(3.0, -1.0), vec2<f32>(-1.0, 3.0));
+  let xy = pos[vid];
+  var out: VOut;
+  out.clip = vec4<f32>(xy, 0.0, 1.0);
+  out.uv = vec2<f32>(xy.x * 0.5 + 0.5, 1.0 - (xy.y * 0.5 + 0.5));
+  return out;
+}
+@fragment
+fn fs_main(input: VOut) -> @location(0) vec4<f32> {
+  let texel = 1.0 / vec2<f32>(textureDimensions(aoTex));
+  var sum = 0.0;
+  for (var y = -1; y <= 2; y = y + 1) {
+    for (var x = -1; x <= 2; x = x + 1) {
+      let off = vec2<f32>(f32(x) - 0.5, f32(y) - 0.5) * texel;
+      sum = sum + textureSampleLevel(aoTex, aoSampler, input.uv + off, 0.0).r;
+    }
+  }
+  return vec4<f32>(sum / 16.0);
+}`;
+
 // Deferred lighting pass (Photon Upgrade 3). Reads the G-buffer (albedo, world
 // normal + AO) and computes lighting per screen pixel, writing the lit image to
 // the swapchain. This first version is a self-contained directional + sky-
@@ -1445,6 +1531,9 @@ ${SCENE_WGSL}
 @group(0) @binding(2) var normalTex: texture_2d<f32>;
 @group(0) @binding(3) var gbSampler: sampler;
 @group(0) @binding(4) var worldTex: texture_2d<f32>;
+// Pre-computed + blurred screen-space AO (Upgrade 5 blur): the SSAO + box-blur
+// passes wrote this before the lighting pass; sampled (not recomputed) here.
+@group(0) @binding(5) var aoTex: texture_2d<f32>;
 // Shadow group (matches the forward shadow-sample layout) so the deferred pass
 // can sample the same sun shadow map the shadow caster pass already rendered.
 struct ShadowData {
@@ -1577,32 +1666,6 @@ fn procedural_forest_shadow(world: vec3<f32>, n: vec3<f32>, m: vec4<f32>) -> f32
   let valleyGradient = smoothstep(-900.0, 820.0, scene.camera.z - world.z);
   return clamp(receiverMaterial * receiverSlope * snowClear * cover * longBands * brokenBands * (0.36 + canopyBreakup * 0.84) * lowSun * distanceFade * (1.62 + valleyGradient * 0.34), 0.0, 0.94);
 }
-// Screen-space ambient occlusion (Photon Upgrade 5), feasible now the G-buffer
-// carries camera-relative world + normal. For each of 8 rotated screen taps it
-// reads the neighbour's world position and adds occlusion when the neighbour
-// rises above this point's tangent plane within a world-space radius. Returns a
-// [floor,1] multiplier; point-sampled (a separable blur pass is a follow-up).
-fn compute_ssao(uv: vec2<f32>, worldRel: vec3<f32>, n: vec3<f32>) -> f32 {
-  let radius = 16.0;
-  var occ = 0.0;
-  var count = 0.0;
-  let rot = fract(sin(dot(uv * 1024.0, vec2<f32>(12.9898, 78.233))) * 43758.5453) * 6.2831853;
-  for (var i = 0; i < 8; i = i + 1) {
-    let ang = rot + f32(i) * 0.7853982;
-    let r = (0.30 + 0.70 * (f32(i) + 1.0) / 8.0) * 0.020;
-    let suv = uv + vec2<f32>(cos(ang), sin(ang)) * r;
-    let sNormal = textureSampleLevel(normalTex, gbSampler, suv, 0.0);
-    if (dot(sNormal.xyz, sNormal.xyz) < 0.0001) { continue; }
-    let sWorldRel = textureSampleLevel(worldTex, gbSampler, suv, 0.0).xyz;
-    let toS = sWorldRel - worldRel;
-    let dist = length(toS);
-    if (dist < 0.05 || dist > radius) { continue; }
-    occ += max(dot(n, toS / dist) - 0.1, 0.0) * (1.0 - dist / radius);
-    count += 1.0;
-  }
-  if (count < 1.0) { return 1.0; }
-  return clamp(1.0 - (occ / count) * 1.8, 0.4, 1.0);
-}
 // Screen-space contact shadows (Photon Upgrade 4 stage 5): a short ray-march
 // toward the sun through the G-buffer to catch fine, short-range occlusion the
 // directional shadow map's resolution misses (e.g. terrain folds). Conservative
@@ -1702,13 +1765,13 @@ fn fs_main(input: VOut) -> @location(0) vec4<f32> {
     forestShadow = forestShadow * (1.0 - realCoverage);
   }
   lit = lit * (1.0 - forestShadow);
-  // Screen-space AO: deepens valley/crease/contact occlusion the coarse vertex
-  // AO misses. A deferred-path effect beyond the forward baseline (Upgrade 5),
-  // gated by shadow.params.w (the pass.ssao toggle). Skipped beyond ~240m
-  // (camera-relative) where the AO is imperceptible and hazed — most of the
-  // frame is distant, so this cuts the AO-tap cost sharply with no visible loss.
+  // Screen-space AO: deepens valley/crease/contact occlusion the coarse vertex AO
+  // misses. Computed + box-blurred in the SSAO passes before this one (Upgrade 5),
+  // sampled here. Gated by shadow.params.w (the pass.ssao toggle) and to near
+  // pixels (<240m camera-relative) where AO reads — matching the SSAO pass's own
+  // distance short-circuit so the sampled value agrees with what was written.
   if (shadow.params.w > 0.5 && dot(worldSample.xyz, worldSample.xyz) < 240.0 * 240.0) {
-    lit = lit * compute_ssao(input.uv, worldSample.xyz, n);
+    lit = lit * textureSampleLevel(aoTex, gbSampler, input.uv, 0.0).r;
   }
   // Contact shadows refine the directional shadow map at short range; near
   // pixels only, and only when real shadows are active (shadow.params.x).
@@ -3066,6 +3129,11 @@ export class Renderer {
   deferredLightPipeline!: GPURenderPipeline;
   deferredLightBindGroupLayout!: GPUBindGroupLayout;
   bloomPipeline!: GPURenderPipeline;
+  // SSAO compute + box-blur passes (Upgrade 5 blur): write a smoothed AO target
+  // that the lighting pass samples instead of computing AO inline. Deferred-only.
+  ssaoPipeline!: GPURenderPipeline;
+  ssaoBindGroupLayout!: GPUBindGroupLayout;
+  aoBlurPipeline!: GPURenderPipeline;
   // Refracting water for the deferred overlay (samples the lit riverbed behind the
   // surface so the shallows show a gently-distorted bed). Compat keeps the plain
   // opaque waterPipeline. The group-1 layout binds the refraction-source snapshot.
@@ -3518,6 +3586,7 @@ export class Renderer {
         { binding: 2, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'float' } },
         { binding: 3, visibility: GPUShaderStage.FRAGMENT, sampler: { type: 'filtering' } },
         { binding: 4, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'float' } },
+        { binding: 5, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'float' } },
       ],
     });
     this.deferredLightPipeline = this.device.createRenderPipeline({
@@ -3525,6 +3594,35 @@ export class Renderer {
       layout: this.device.createPipelineLayout({ bindGroupLayouts: [this.deferredLightBindGroupLayout, this.shadowSampleBindGroupLayout] }),
       vertex: { module: deferredLightModule, entryPoint: 'vs_main' },
       fragment: { module: deferredLightModule, entryPoint: 'fs_main', targets: [{ format: this.format }] },
+      primitive: { topology: 'triangle-list', cullMode: 'none' },
+    });
+
+    // SSAO compute pass: G-buffer normal + world -> raw single-channel AO target.
+    const ssaoModule = this.createShaderModuleChecked('ssao shader', SSAO_SHADER);
+    this.ssaoBindGroupLayout = this.device.createBindGroupLayout({
+      label: 'ssao bind group layout',
+      entries: [
+        { binding: 0, visibility: GPUShaderStage.FRAGMENT, buffer: { type: 'uniform' } },
+        { binding: 1, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'float' } },
+        { binding: 2, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'float' } },
+        { binding: 3, visibility: GPUShaderStage.FRAGMENT, sampler: { type: 'filtering' } },
+      ],
+    });
+    this.ssaoPipeline = this.device.createRenderPipeline({
+      label: 'ssao pipeline',
+      layout: this.device.createPipelineLayout({ bindGroupLayouts: [this.ssaoBindGroupLayout] }),
+      vertex: { module: ssaoModule, entryPoint: 'vs_main' },
+      fragment: { module: ssaoModule, entryPoint: 'fs_main', targets: [{ format: 'r8unorm' }] },
+      primitive: { topology: 'triangle-list', cullMode: 'none' },
+    });
+    // SSAO box-blur pass: raw AO -> smoothed AO. Reuses the composite (texture +
+    // sampler) bind group layout; only the target format differs (r8unorm).
+    const aoBlurModule = this.createShaderModuleChecked('ao blur shader', AO_BLUR_SHADER);
+    this.aoBlurPipeline = this.device.createRenderPipeline({
+      label: 'ao blur pipeline',
+      layout: this.device.createPipelineLayout({ bindGroupLayouts: [this.compositeBindGroupLayout] }),
+      vertex: { module: aoBlurModule, entryPoint: 'vs_main' },
+      fragment: { module: aoBlurModule, entryPoint: 'fs_main', targets: [{ format: 'r8unorm' }] },
       primitive: { topology: 'triangle-list', cullMode: 'none' },
     });
 
@@ -4854,6 +4952,47 @@ export class Renderer {
           }
         }
         gpass.end();
+        // Screen-space AO (Upgrade 5 blur): compute raw AO from the G-buffer, then
+        // box-blur it into the AO target the lighting pass samples. When SSAO is
+        // toggled off these passes are skipped; the lighting pass then never samples
+        // the AO target, so its (stale) contents don't matter.
+        const ssaoRawTex = this.renderTargets.ssaoRawTexture;
+        const ssaoBlurTex = this.renderTargets.ssaoBlurTexture;
+        const ssaoBlurView = (ssaoBlurTex ?? worldTex).createView();
+        if (runSsao && ssaoRawTex && ssaoBlurTex) {
+          const ssaoRawView = ssaoRawTex.createView();
+          const ssaoPass = encoder.beginRenderPass({
+            label: 'deferred ssao pass',
+            colorAttachments: [{ view: ssaoRawView, clearValue: { r: 1, g: 1, b: 1, a: 1 }, loadOp: 'clear', storeOp: 'store' }],
+            timestampWrites: this.frameGraph.timed('deferred-ssao', 'render', true),
+          });
+          ssaoPass.setPipeline(this.ssaoPipeline);
+          ssaoPass.setBindGroup(0, this.device.createBindGroup({
+            layout: this.ssaoBindGroupLayout,
+            entries: [
+              { binding: 0, resource: { buffer: this.uniformBuffer } },
+              { binding: 1, resource: normalView },
+              { binding: 2, resource: worldView },
+              { binding: 3, resource: this.compositeSampler },
+            ],
+          }));
+          ssaoPass.draw(3);
+          ssaoPass.end();
+          const aoBlurPass = encoder.beginRenderPass({
+            label: 'deferred ao blur pass',
+            colorAttachments: [{ view: ssaoBlurView, clearValue: { r: 1, g: 1, b: 1, a: 1 }, loadOp: 'clear', storeOp: 'store' }],
+          });
+          aoBlurPass.setPipeline(this.aoBlurPipeline);
+          aoBlurPass.setBindGroup(0, this.device.createBindGroup({
+            layout: this.compositeBindGroupLayout,
+            entries: [
+              { binding: 0, resource: ssaoRawView },
+              { binding: 1, resource: this.compositeSampler },
+            ],
+          }));
+          aoBlurPass.draw(3);
+          aoBlurPass.end();
+        }
         // Sky background pass: fill the swapchain with the procedural sky (or a
         // neutral clear) so the lighting pass can discard empty-G-buffer pixels
         // and let the sky show through behind the terrain.
@@ -4880,6 +5019,7 @@ export class Renderer {
             { binding: 2, resource: normalView },
             { binding: 3, resource: this.compositeSampler },
             { binding: 4, resource: worldView },
+            { binding: 5, resource: ssaoBlurView },
           ],
         });
         const lpass = encoder.beginRenderPass({
