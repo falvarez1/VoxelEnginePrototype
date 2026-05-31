@@ -1,4 +1,4 @@
-import { biomeMask, fbm2, riverCenter, ridge2, snowMask, terrainHeight, valueNoise2, wetnessMask } from './terrain_math.ts';
+import { biomeMask, drainageMask, fbm2, riverCenter, ridge2, snowMask, terrainHeight, valueNoise2, wetnessMask } from './terrain_math.ts';
 import {
   FLOAT_TERRAIN_VERTEX_FLOATS,
   PACKED_TERRAIN_VERTEX_STRIDE,
@@ -4693,6 +4693,31 @@ export class Renderer {
         if (roll < 0.62) continue;
         const lateral = (valueNoise2(z * 0.016 - 9.0, i * 7.3) - 0.5) * 78;
         addLowlandLake(z, lateral, 16 + roll * 24, 11 + valueNoise2(z * 0.009, 29.0) * 18);
+      }
+    }
+
+    // Basin lakes (Photon Upgrade 7 final): place standalone lakes in the carved
+    // drainage basins so they actually hold water. A world-anchored grid scan finds
+    // cells where the basin-carve field is strong (same value_noise2 field + drainage
+    // gate as terrain_height()'s carve) AND the carved terrain is low enough to pool;
+    // addLake then conforms the water level to the basin floor and records the
+    // footprint so vegetation is culled out of it. Deterministic per cell so the
+    // lakes stay put as the camera moves.
+    const BASIN_LAKE_CELL = 340;
+    const basinAnchorX = Math.round(cameraPosition[0] / BASIN_LAKE_CELL) * BASIN_LAKE_CELL;
+    const basinAnchorZ = Math.round(cameraPosition[2] / BASIN_LAKE_CELL) * BASIN_LAKE_CELL;
+    for (let iz = -3; iz <= 3; iz++) {
+      for (let ix = -3; ix <= 3; ix++) {
+        const cx = basinAnchorX + ix * BASIN_LAKE_CELL + (valueNoise2(ix * 7.1 + iz * 3.3, 51.0) - 0.5) * 190;
+        const cz = basinAnchorZ + iz * BASIN_LAKE_CELL + (valueNoise2(ix * 2.7 - iz * 5.9, 17.0) - 0.5) * 190;
+        // Match terrain_height()'s basin field: smooth pocket of the same low-freq
+        // noise, gated to drainage-fed lowland that is carved low enough to hold water.
+        const pockets = smoothStep(0.52, 0.74, valueNoise2(cx * 0.0045 + 51.0, cz * 0.0045 - 23.0));
+        if (pockets < 0.55) continue;
+        if (drainageMask(cx, cz) < 0.32) continue;
+        if (terrainHeight(cx, cz) > SCENIC_WATER_LEVEL + 5.5) continue;
+        const r = 28 + pockets * 46;
+        addLake(cx, cz, r, r * (0.68 + valueNoise2(cx * 0.01 + 5.0, cz * 0.01 - 9.0) * 0.42));
       }
     }
 
