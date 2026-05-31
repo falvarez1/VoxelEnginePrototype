@@ -76,11 +76,14 @@ path is byte-for-byte unchanged and re-verified after every shared-module edit.
 - Upgrade 4 (shadows): single directional map + stabilized fit + caster culling
   (stages 1-3) done in Phase 8; stage 5 screen-space contact shadows added in the
   deferred lighting pass. Cascaded shadow maps (stage 4, high/ultra) remain.
-- Upgrade 5 (AO): SSAO in the deferred lighting pass (G-buffer world + normal,
-  distance-culled). Separable blur / half-res target remain.
-- Upgrade 6 (atmosphere/post): single-pass bloom + cinematic vignette in a
-  scene-colour → swapchain present pass. HDR scene target + downsampled blur
-  pyramid remain.
+- Upgrade 5 (AO): SSAO now has its own pass (G-buffer world + normal,
+  distance-culled) writing a single-channel target, then a 4x4 box-blur pass; the
+  lighting pass samples the blurred AO. Reads as soft contact darkening, no grain.
+- Upgrade 6 (atmosphere/post): bloom is now a half-res blur pyramid — prefilter
+  (box downsample + soft-knee threshold) + separable Gaussian (H/V) + present
+  (glow + teal-orange grade + vignette). Wide, soft glow. HDR scene target + a
+  full multi-mip pyramid remain (blocked on un-tone-mapping the shared sky/water
+  shaders — needs deferred-only copies, not a scene-format change).
 - Upgrade 7 (water): stages 1-2 done in the deferred overlay. Depth-graded
   translucency, then refraction: the lit scene (sky + terrain) is snapshotted
   into a refraction-source target before the water draws, and a dedicated
