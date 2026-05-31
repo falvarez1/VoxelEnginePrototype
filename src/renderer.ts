@@ -113,6 +113,7 @@ const DEFAULT_RENDERER_SETTINGS: RendererSettings = {
   animationSpeed: 1,
   sunDirection: [-0.930, 0.139, -0.339],
   streamRadius: 11,
+  vegetationImpostors: false,
 };
 
 interface RenderableChunk {
@@ -3155,6 +3156,72 @@ fn vs_main(input: VertexIn) -> @builtin(position) vec4<f32> {
 }
 `;
 
+// Tree impostor billboards (Photon Upgrade 8, vegetation LOD framework). A default-
+// off opt-in: when enabled, big-pine instances render as upright camera-facing
+// billboards with a procedural conifer silhouette instead of the full mesh, for a
+// cheap distant-forest LOD. Reuses the vegetation instance buffer (base/scale/kind/
+// tint); shrubs + rocks collapse out. Procedural (no atlas bake) so there is no art
+// dependency; outputs display-space colour (drawn in the LDR present/forward pass).
+const IMPOSTOR_SHADER = /* wgsl */`
+${SCENE_WGSL}
+struct InstIn {
+  @location(0) base: vec3<f32>,
+  @location(1) scale: f32,
+  @location(2) kind: f32,
+  @location(3) seed: f32,
+  @location(4) tint: f32,
+  @location(5) aspect: f32,
+};
+struct VOut {
+  @builtin(position) clip: vec4<f32>,
+  @location(0) uv: vec2<f32>,
+  @location(1) tint: f32,
+  @location(2) shade: f32,
+};
+@vertex
+fn vs_main(inst: InstIn, @builtin(vertex_index) vid: u32) -> VOut {
+  var out: VOut;
+  // Only big pines (tree kind) become impostors; collapse everything else to a
+  // degenerate point behind the far plane so it is clipped.
+  if (inst.kind < 0.5 || inst.kind >= 1.5) {
+    out.clip = vec4<f32>(0.0, 0.0, 2.0, 1.0);
+    out.uv = vec2<f32>(0.0, 0.0);
+    out.tint = 0.0;
+    out.shade = 0.0;
+    return out;
+  }
+  var corners = array<vec2<f32>, 6>(
+    vec2<f32>(-0.5, 0.0), vec2<f32>(0.5, 0.0), vec2<f32>(0.5, 1.0),
+    vec2<f32>(-0.5, 0.0), vec2<f32>(0.5, 1.0), vec2<f32>(-0.5, 1.0),
+  );
+  let c = corners[vid];
+  // Cylindrical billboard: stays upright, rotates about Y to face the camera.
+  let toCam = scene.camera.xyz - inst.base;
+  let rightDir = normalize(vec3<f32>(toCam.z, 0.0, -toCam.x) + vec3<f32>(0.0001, 0.0, 0.0));
+  let upDir = vec3<f32>(0.0, 1.0, 0.0);
+  let w = inst.scale * 1.5;
+  let h = inst.scale * 2.8;
+  let world = inst.base + rightDir * (c.x * w) + upDir * (c.y * h);
+  out.clip = scene.viewProjRel * vec4<f32>(world - scene.camera.xyz, 1.0);
+  out.uv = vec2<f32>(c.x + 0.5, c.y);
+  out.tint = inst.tint;
+  out.shade = 0.55 + 0.45 * c.y;
+  return out;
+}
+@fragment
+fn fs_main(in: VOut) -> @location(0) vec4<f32> {
+  // Conifer silhouette: a cone that narrows to the top. Alpha-discard outside it.
+  let halfW = mix(0.46, 0.02, in.uv.y);
+  if (abs(in.uv.x - 0.5) > halfW) { discard; }
+  let sunUp = clamp(normalize(scene.sun.xyz).y, 0.0, 1.0);
+  let baseGreen = mix(vec3<f32>(0.06, 0.20, 0.09), vec3<f32>(0.13, 0.34, 0.15), clamp(in.tint, 0.0, 1.0));
+  var color = baseGreen * (0.5 + 0.6 * sunUp) * in.shade;
+  let ex = max(scene.visual.x, 0.01);
+  color = pow((color * ex) / (color * ex + vec3<f32>(1.0)), vec3<f32>(1.0 / 2.2));
+  return vec4<f32>(color, 1.0);
+}
+`;
+
 function makeTreeMesh() {
   const verts = [];
   const add = (p: number[], n: number[], part: number) => verts.push(p[0], p[1], p[2], n[0], n[1], n[2], part);
@@ -3255,6 +3322,8 @@ export class Renderer {
   terrainPipeline!: GPURenderPipeline;
   waterPipeline!: GPURenderPipeline;
   vegetationPipeline!: GPURenderPipeline;
+  // Tree billboard impostors (Upgrade 8, default-off LOD framework).
+  impostorPipeline!: GPURenderPipeline;
   beaconPipeline!: GPURenderPipeline;
   terrainArenaPipeline!: GPURenderPipeline;
   // Deferred path (Upgrade 3): G-buffer geometry pipeline for the near terrain
@@ -3450,6 +3519,11 @@ export class Renderer {
     if (typeof window !== 'undefined') {
       (window as unknown as { __stormSetRenderGraph?: (mode: string) => void }).__stormSetRenderGraph = (mode: string) => {
         this.setRenderGraphMode(mode === 'deferred' ? 'deferred' : 'compat');
+      };
+      // Runtime toggle for the default-off tree impostor LOD (Upgrade 8): call
+      // __stormSetVegImpostors(true|false) from the dev console.
+      (window as unknown as { __stormSetVegImpostors?: (on: boolean) => void }).__stormSetVegImpostors = (on: boolean) => {
+        this.settings = { ...this.settings, vegetationImpostors: !!on };
       };
     }
     this.uploadRing = new GpuUploadRing(this.device);
@@ -4034,6 +4108,35 @@ export class Renderer {
         ],
       },
       fragment: { module: vegetationModule, entryPoint: 'fs_main', targets: [{ format: this.format }] },
+      primitive: { topology: 'triangle-list', cullMode: 'none' },
+      depthStencil: { format: DEPTH_FORMAT, depthWriteEnabled: true, depthCompare: 'less' },
+    });
+
+    // Tree impostor pipeline: instance-only (billboard quad generated from the
+    // vertex index), reads the same 8-float vegetation instance buffer.
+    const impostorModule = this.createShaderModuleChecked('impostor shader', IMPOSTOR_SHADER);
+    this.impostorPipeline = this.device.createRenderPipeline({
+      label: 'tree impostor pipeline',
+      layout: pipelineLayout,
+      vertex: {
+        module: impostorModule,
+        entryPoint: 'vs_main',
+        buffers: [
+          {
+            arrayStride: 8 * 4,
+            stepMode: 'instance',
+            attributes: [
+              { shaderLocation: 0, offset: 0, format: 'float32x3' },
+              { shaderLocation: 1, offset: 3 * 4, format: 'float32' },
+              { shaderLocation: 2, offset: 4 * 4, format: 'float32' },
+              { shaderLocation: 3, offset: 5 * 4, format: 'float32' },
+              { shaderLocation: 4, offset: 6 * 4, format: 'float32' },
+              { shaderLocation: 5, offset: 7 * 4, format: 'float32' },
+            ],
+          },
+        ],
+      },
+      fragment: { module: impostorModule, entryPoint: 'fs_main', targets: [{ format: this.format }] },
       primitive: { topology: 'triangle-list', cullMode: 'none' },
       depthStencil: { format: DEPTH_FORMAT, depthWriteEnabled: true, depthCompare: 'less' },
     });
@@ -5501,10 +5604,18 @@ export class Renderer {
               depthStencilAttachment: { view: depthView, depthLoadOp: 'load', depthStoreOp: 'store' },
             });
             vegPass.setBindGroup(0, this.uniformBindGroup);
-            vegPass.setPipeline(this.vegetationPipeline);
-            vegPass.setVertexBuffer(0, this.treeVertexBuffer);
-            vegPass.setVertexBuffer(1, vegetationBatchBuffer);
-            vegPass.draw(this.treeVertexCount, vegetationInstances);
+            if (this.settings.vegetationImpostors) {
+              // Billboard impostors (Upgrade 8): one quad per instance from the
+              // instance buffer; shrubs/rocks collapse out in the shader.
+              vegPass.setPipeline(this.impostorPipeline);
+              vegPass.setVertexBuffer(0, vegetationBatchBuffer);
+              vegPass.draw(6, vegetationInstances);
+            } else {
+              vegPass.setPipeline(this.vegetationPipeline);
+              vegPass.setVertexBuffer(0, this.treeVertexBuffer);
+              vegPass.setVertexBuffer(1, vegetationBatchBuffer);
+              vegPass.draw(this.treeVertexCount, vegetationInstances);
+            }
             vegPass.end();
           }
         }
@@ -5590,10 +5701,18 @@ export class Renderer {
     }
 
     if (this.settings.vegetationEnabled && vegetationBatchBuffer && vegetationInstances > 0) {
-      pass.setPipeline(this.vegetationPipeline);
-      pass.setVertexBuffer(0, this.treeVertexBuffer);
-      pass.setVertexBuffer(1, vegetationBatchBuffer);
-      pass.draw(this.treeVertexCount, vegetationInstances);
+      if (this.settings.vegetationImpostors) {
+        // Billboard impostors (Upgrade 8): one quad per instance; shrubs/rocks
+        // collapse out in the shader.
+        pass.setPipeline(this.impostorPipeline);
+        pass.setVertexBuffer(0, vegetationBatchBuffer);
+        pass.draw(6, vegetationInstances);
+      } else {
+        pass.setPipeline(this.vegetationPipeline);
+        pass.setVertexBuffer(0, this.treeVertexBuffer);
+        pass.setVertexBuffer(1, vegetationBatchBuffer);
+        pass.draw(this.treeVertexCount, vegetationInstances);
+      }
       drawCalls++;
     }
 

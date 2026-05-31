@@ -311,6 +311,11 @@ export interface RendererSettings {
   // Chunk stream radius (chunks). The renderer uses it to size the camera-centered
   // near-vegetation render disc and the matching scenic-forest clearing.
   streamRadius: number;
+  // Render trees as camera-facing billboard impostors instead of full meshes
+  // (Photon Upgrade 8, vegetation LOD framework). Default off — opt-in, since the
+  // billboard fidelity / transition is a visual-tuning choice. Toggle at runtime
+  // via window.__stormSetVegImpostors(true|false).
+  vegetationImpostors?: boolean;
 }
 
 export interface RendererStats {
