@@ -74,8 +74,10 @@ path is byte-for-byte unchanged and re-verified after every shared-module edit.
   vegetation + water drawn forward over the deferred terrain, depth-tested
   against the G-buffer depth. Near-indistinguishable from the forward render.
 - Upgrade 4 (shadows): single directional map + stabilized fit + caster culling
-  (stages 1-3) done in Phase 8; stage 5 screen-space contact shadows added in the
-  deferred lighting pass. Cascaded shadow maps (stage 4, high/ultra) remain.
+  (stages 1-3) done in Phase 8; stage 5 screen-space contact shadows in the
+  deferred lighting pass; stage 4 cascaded shadows now done as a deferred-only
+  near cascade — a tighter, ~3x-texel-density second map (own caster pass) blended
+  over the broad map for close pixels. (Compat keeps the single broad map.)
 - Upgrade 5 (AO): SSAO now has its own pass (G-buffer world + normal,
   distance-culled) writing a single-channel target, then a 4x4 box-blur pass; the
   lighting pass samples the blurred AO. Reads as soft contact darkening, no grain.
