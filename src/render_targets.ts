@@ -37,6 +37,11 @@ export class RenderTargets {
   private depthTex: GPUTexture | null = null;
   private readonly shadowTex: GPUTexture;
   private readonly shadowView: GPUTextureView;
+  // Near shadow cascade map (deferred-only; same resolution as the broad map but a
+  // tighter ortho box, so ~3x the texel density near the camera). Lazily allocated
+  // with the other deferred targets.
+  private shadowNearTex: GPUTexture | null = null;
+  private shadowNearViewCached: GPUTextureView | null = null;
   // Deferred G-buffer attachments (canvas-sized, allocated only when deferred).
   // Mutable so the render-graph mode can be switched at runtime (lazy alloc).
   deferred: boolean;
@@ -156,6 +161,16 @@ export class RenderTargets {
       label: 'bloom half B', size: halfSize, format: 'rgba16float',
       usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING,
     });
+    // Near shadow cascade: fixed shadow-map resolution (canvas-independent), so
+    // allocate once and keep it across resizes.
+    if (!this.shadowNearTex) {
+      this.shadowNearTex = this.device.createTexture({
+        label: 'sun shadow near cascade', size: { width: this.shadowSize, height: this.shadowSize },
+        format: this.shadowFormat,
+        usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING,
+      });
+      this.shadowNearViewCached = this.shadowNearTex.createView();
+    }
   }
 
   // Turn on the deferred targets at runtime (lazy: compat sessions never pay the
@@ -179,6 +194,7 @@ export class RenderTargets {
   get ssaoBlurTexture(): GPUTexture | null { return this.ssaoBlurTex; }
   get bloomHalfATexture(): GPUTexture | null { return this.bloomHalfA; }
   get bloomHalfBTexture(): GPUTexture | null { return this.bloomHalfB; }
+  get shadowNearView(): GPUTextureView | null { return this.shadowNearViewCached; }
 
   destroy(): void {
     this.depthTex?.destroy();
@@ -201,6 +217,9 @@ export class RenderTargets {
     this.bloomHalfA = null;
     this.bloomHalfB?.destroy();
     this.bloomHalfB = null;
+    this.shadowNearTex?.destroy();
+    this.shadowNearTex = null;
+    this.shadowNearViewCached = null;
     this.shadowTex.destroy();
   }
 }

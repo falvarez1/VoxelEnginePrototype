@@ -228,6 +228,14 @@ const SHADOW_ORTHO_DEPTH = 1400;
 // spends resolution on the viewed region instead of behind the camera. Kept
 // well under SHADOW_ORTHO_HALF so near-camera terrain stays inside the box.
 const SHADOW_LOOKAHEAD = 240;
+// Near shadow cascade (Photon Upgrade 4 stage 4, deferred-only). A second, tighter
+// ortho box (~3x the texel density of the broad map) centred close to the eye, so
+// near-camera terrain creases get crisp shadows the broad map blurs. Sampled only
+// by the deferred lighting pass and blended out by NEAR_SHADOW_SPLIT; the compat
+// forward path keeps using the single broad map untouched.
+const NEAR_SHADOW_ORTHO_HALF = 140;
+const NEAR_SHADOW_LOOKAHEAD = 90;
+const NEAR_SHADOW_SPLIT = 130;
 const LOD_SEAM_NEG_X = 1 << 0;
 const LOD_SEAM_POS_X = 1 << 1;
 const LOD_SEAM_NEG_Z = 1 << 2;
@@ -1586,27 +1594,43 @@ struct ShadowData {
 @group(1) @binding(0) var<uniform> shadow: ShadowData;
 @group(1) @binding(1) var shadowDepth: texture_depth_2d;
 @group(1) @binding(2) var shadowSampler: sampler_comparison;
+// group 2 = near shadow cascade (Upgrade 4 stage 4, deferred-only): a tighter,
+// higher-density map for close pixels, blended out by NEAR_SHADOW_SPLIT.
+@group(2) @binding(0) var<uniform> shadowNear: ShadowData;
+@group(2) @binding(1) var shadowNearDepth: texture_depth_2d;
+@group(2) @binding(2) var shadowNearSampler: sampler_comparison;
 ${WGSL_HELPERS}
-fn sample_sun_shadow(world: vec3<f32>, n: vec3<f32>) -> f32 {
-  if (shadow.params.x < 0.5) { return 1.0; }
-  let lightClip = shadow.lightViewProj * vec4<f32>(world, 1.0);
+// Sample one cascade's 3x3 PCF; returns 1.0 (lit) when the point falls outside the
+// cascade's ortho box so the caller can fall back to the broader cascade.
+fn sample_cascade(lvp: mat4x4<f32>, depthTex: texture_depth_2d, samp: sampler_comparison, texel: f32, biasBase: f32, world: vec3<f32>, n: vec3<f32>) -> f32 {
+  let lightClip = lvp * vec4<f32>(world, 1.0);
   if (lightClip.w <= 0.0) { return 1.0; }
   let ndc = lightClip.xyz / lightClip.w;
   if (ndc.x < -1.0 || ndc.x > 1.0 || ndc.y < -1.0 || ndc.y > 1.0 || ndc.z > 1.0) { return 1.0; }
   let uv = vec2<f32>(ndc.x * 0.5 + 0.5, ndc.y * -0.5 + 0.5);
   let sunDir = normalize(scene.sun.xyz);
   let slope = clamp(1.0 - max(dot(n, sunDir), 0.0), 0.0, 1.0);
-  let bias = shadow.params.z * (1.0 + slope * 4.0);
+  let bias = biasBase * (1.0 + slope * 4.0);
   let compareDepth = ndc.z - bias;
-  let texel = shadow.params.y;
   var sum = 0.0;
   for (var oy = -1; oy <= 1; oy = oy + 1) {
     for (var ox = -1; ox <= 1; ox = ox + 1) {
       let offset = vec2<f32>(f32(ox), f32(oy)) * texel;
-      sum = sum + textureSampleCompareLevel(shadowDepth, shadowSampler, uv + offset, compareDepth);
+      sum = sum + textureSampleCompareLevel(depthTex, samp, uv + offset, compareDepth);
     }
   }
   return sum / 9.0;
+}
+fn sample_sun_shadow(world: vec3<f32>, n: vec3<f32>) -> f32 {
+  if (shadow.params.x < 0.5) { return 1.0; }
+  let far = sample_cascade(shadow.lightViewProj, shadowDepth, shadowSampler, shadow.params.y, shadow.params.z, world, n);
+  // Near cascade only for close pixels, blended out before its box edge so there
+  // is no visible cascade seam. Beyond the split, the broad map alone is used.
+  let camDist = distance(world, scene.camera.xyz);
+  let nearAmt = 1.0 - clamp((camDist - (${NEAR_SHADOW_SPLIT}.0 - 25.0)) / 25.0, 0.0, 1.0);
+  if (nearAmt <= 0.0 || shadowNear.params.x < 0.5) { return far; }
+  let near = sample_cascade(shadowNear.lightViewProj, shadowNearDepth, shadowNearSampler, shadowNear.params.y, shadowNear.params.z, world, n);
+  return mix(far, near, nearAmt);
 }
 // Noise chain + cinematic_light copied verbatim from TERRAIN_SHADER so the
 // deferred terrain gets the same warm sun, landform shade, noise-driven broad
@@ -3236,6 +3260,12 @@ export class Renderer {
   shadowDepthTexture!: GPUTexture;
   shadowDepthView!: GPUTextureView;
   lightViewProj: Mat4 = mat4Identity();
+  // Near shadow cascade (deferred-only, Upgrade 4 stage 4): its own uniform + caster
+  // bind group; the sample bind group is rebuilt per-frame (the near map view is
+  // owned by RenderTargets and allocated lazily on first deferred use).
+  nearShadowUniformBuffer!: GPUBuffer;
+  nearShadowCasterBindGroup!: GPUBindGroup;
+  shadowComparisonSampler!: GPUSampler;
   terrainArenaCullPipeline!: GPUComputePipeline;
   terrainArenaCullBindGroupLayout!: GPUBindGroupLayout;
   clusterCullPipeline!: GPUComputePipeline;
@@ -3431,6 +3461,11 @@ export class Renderer {
       size: 16 * 4 + 4 * 4,
       usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
     });
+    this.nearShadowUniformBuffer = this.device.createBuffer({
+      label: 'near shadow cascade uniforms',
+      size: 16 * 4 + 4 * 4,
+      usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+    });
     // Shadow depth texture + view are owned by this.renderTargets (allocated in
     // its constructor) and already aliased onto this.shadowDepth* above.
     const shadowSampler = this.device.createSampler({
@@ -3439,6 +3474,9 @@ export class Renderer {
       magFilter: 'linear',
       minFilter: 'linear',
     });
+    // Kept as a field so the deferred near-cascade sample bind group (rebuilt
+    // per-frame) can reuse the same comparison sampler.
+    this.shadowComparisonSampler = shadowSampler;
     this.shadowCasterBindGroupLayout = this.device.createBindGroupLayout({
       label: 'shadow caster bind group layout',
       entries: [{ binding: 0, visibility: GPUShaderStage.VERTEX, buffer: { type: 'uniform' } }],
@@ -3454,6 +3492,10 @@ export class Renderer {
     this.shadowCasterBindGroup = this.device.createBindGroup({
       layout: this.shadowCasterBindGroupLayout,
       entries: [{ binding: 0, resource: { buffer: this.shadowUniformBuffer } }],
+    });
+    this.nearShadowCasterBindGroup = this.device.createBindGroup({
+      layout: this.shadowCasterBindGroupLayout,
+      entries: [{ binding: 0, resource: { buffer: this.nearShadowUniformBuffer } }],
     });
     this.shadowSampleBindGroup = this.device.createBindGroup({
       layout: this.shadowSampleBindGroupLayout,
@@ -3713,7 +3755,8 @@ export class Renderer {
     });
     this.deferredLightPipeline = this.device.createRenderPipeline({
       label: 'deferred lighting pipeline',
-      layout: this.device.createPipelineLayout({ bindGroupLayouts: [this.deferredLightBindGroupLayout, this.shadowSampleBindGroupLayout] }),
+      // group 2 = near shadow cascade (reuses the shadow-sample layout).
+      layout: this.device.createPipelineLayout({ bindGroupLayouts: [this.deferredLightBindGroupLayout, this.shadowSampleBindGroupLayout, this.shadowSampleBindGroupLayout] }),
       vertex: { module: deferredLightModule, entryPoint: 'vs_main' },
       fragment: { module: deferredLightModule, entryPoint: 'fs_main', targets: [{ format: this.format }] },
       primitive: { topology: 'triangle-list', cullMode: 'none' },
@@ -4726,6 +4769,37 @@ export class Renderer {
     this.device.queue.writeBuffer(this.shadowUniformBuffer, 0, data);
   }
 
+  // Near shadow cascade (deferred-only): a tighter ortho box close to the eye, same
+  // map resolution, so near-camera shadows get ~3x the texel density. Same texel
+  // snapping as the broad map; a smaller bias since the texels are smaller.
+  private writeNearShadowUniforms(camera: FlyCamera, active: boolean): void {
+    const sd = this.settings.sunDirection ?? DEFAULT_RENDERER_SETTINGS.sunDirection;
+    const len = Math.hypot(sd[0], sd[1], sd[2]) || 1;
+    const lx = sd[0] / len, ly = sd[1] / len, lz = sd[2] / len;
+    const fwd = camera.forward();
+    const cx = camera.position[0] + fwd[0] * NEAR_SHADOW_LOOKAHEAD;
+    const cy = camera.position[1] + fwd[1] * NEAR_SHADOW_LOOKAHEAD;
+    const cz = camera.position[2] + fwd[2] * NEAR_SHADOW_LOOKAHEAD;
+    const center = new Float32Array([cx, cy, cz]);
+    const eye = new Float32Array([cx + lx * SHADOW_ORTHO_DEPTH, cy + ly * SHADOW_ORTHO_DEPTH, cz + lz * SHADOW_ORTHO_DEPTH]);
+    const up = Math.abs(ly) > 0.95 ? new Float32Array([0, 0, 1]) : new Float32Array([0, 1, 0]);
+    const view = mat4LookAt(eye, center, up);
+    const proj = mat4Ortho(-NEAR_SHADOW_ORTHO_HALF, NEAR_SHADOW_ORTHO_HALF, -NEAR_SHADOW_ORTHO_HALF, NEAR_SHADOW_ORTHO_HALF, 1, SHADOW_ORTHO_DEPTH * 2);
+    const lvp = mat4Multiply(proj, view);
+    const half = SHADOW_MAP_SIZE / 2;
+    const texX = lvp[12] * half;
+    const texY = lvp[13] * half;
+    lvp[12] += (Math.round(texX) - texX) / half;
+    lvp[13] += (Math.round(texY) - texY) / half;
+    const data = new Float32Array(16 + 4);
+    data.set(lvp, 0);
+    data[16] = active ? 1 : 0;
+    data[17] = 1 / SHADOW_MAP_SIZE;
+    data[18] = 0.0009;
+    data[19] = 0;
+    this.device.queue.writeBuffer(this.nearShadowUniformBuffer, 0, data);
+  }
+
   private encodeDepthPyramid(encoder: GPUCommandEncoder, viewProj: Mat4): void {
     if (!this.depthPyramid) return;
     const width = this.canvas.width;
@@ -4844,6 +4918,8 @@ export class Renderer {
     this.resize();
     this.writeUniforms(camera, viewProj, timeSeconds);
     this.writeShadowUniforms(camera, runShadows, runSsao);
+    // Near shadow cascade is deferred-only; keep its uniform fresh when in that mode.
+    if (this.renderGraphMode === 'deferred') this.writeNearShadowUniforms(camera, runShadows);
     if (this.settings.farTerrainEnabled) this.updateFarTerrain(camera.position, timeSeconds);
     if (this.settings.waterEnabled) this.updateWater(camera.position);
     this.uploadRing.flush();
@@ -5034,6 +5110,61 @@ export class Renderer {
         const albedoView = albedoTex.createView();
         const normalView = normalTex.createView();
         const worldView = worldTex.createView();
+        // Near shadow cascade caster (deferred-only): re-render the terrain arena +
+        // vegetation into the tighter near map so the deferred lighting pass can
+        // sample crisp close-range shadows. Mirrors the broad caster but with the
+        // near caster bind group + near depth target.
+        const shadowNearView = this.renderTargets.shadowNearView;
+        if (runShadows && shadowNearView) {
+          const nearPass = encoder.beginRenderPass({
+            label: 'shadow near cascade pass',
+            colorAttachments: [],
+            depthStencilAttachment: { view: shadowNearView, depthClearValue: 1, depthLoadOp: 'clear', depthStoreOp: 'store' },
+            timestampWrites: this.frameGraph.timed('shadow-near', 'render', true),
+          });
+          nearPass.setBindGroup(0, this.nearShadowCasterBindGroup);
+          if (
+            terrainArenaActive
+            && terrainArenaReplaySlots > 0
+            && this.terrainArena.vertexBuffer
+            && this.terrainArena.originBuffer
+            && this.terrainArena.indexBuffer
+            && this.terrainArena.compactIndirectBuffer
+          ) {
+            nearPass.setPipeline(this.shadowCasterPipeline);
+            nearPass.setVertexBuffer(0, this.terrainArena.vertexBuffer);
+            nearPass.setVertexBuffer(1, this.terrainArena.originBuffer);
+            nearPass.setIndexBuffer(this.terrainArena.indexBuffer, 'uint32');
+            if (this.capabilities.multiDrawIndirect) {
+              const multiDrawPass = nearPass as GPURenderPassEncoder & {
+                multiDrawIndexedIndirect: (buffer: GPUBuffer, offset: number, maxDrawCount: number) => void;
+              };
+              multiDrawPass.multiDrawIndexedIndirect(this.terrainArena.compactIndirectBuffer, 0, terrainArenaReplaySlots);
+            } else {
+              for (let drawSlot = 0; drawSlot < terrainArenaReplaySlots; drawSlot++) {
+                nearPass.drawIndexedIndirect(this.terrainArena.compactIndirectBuffer, drawSlot * INDIRECT_INDEXED_ARGS_BYTES);
+              }
+            }
+          }
+          if (this.settings.vegetationEnabled && shadowVegetationBuffer && shadowVegetationInstances > 0) {
+            nearPass.setPipeline(this.shadowVegetationCasterPipeline);
+            nearPass.setVertexBuffer(0, this.treeVertexBuffer);
+            nearPass.setVertexBuffer(1, shadowVegetationBuffer);
+            nearPass.draw(this.treeVertexCount, shadowVegetationInstances);
+          }
+          nearPass.end();
+        }
+        // Near cascade sample bind group for the lighting pass (group 2); falls back
+        // to the broad shadow map's view when the near map is unavailable so the
+        // bind group is always complete.
+        const nearShadowSampleBindGroup = this.device.createBindGroup({
+          layout: this.shadowSampleBindGroupLayout,
+          entries: [
+            { binding: 0, resource: { buffer: this.nearShadowUniformBuffer } },
+            { binding: 1, resource: shadowNearView ?? this.shadowDepthView },
+            { binding: 2, resource: this.shadowComparisonSampler },
+          ],
+        });
         // Deferred sky/lighting/overlay render into the offscreen scene-colour
         // target; a final bloom pass composites it to the swapchain. Falls back
         // to direct-to-swapchain (no bloom) if the scene target is unavailable.
@@ -5153,6 +5284,7 @@ export class Renderer {
         lpass.setPipeline(this.deferredLightPipeline);
         lpass.setBindGroup(0, lightBindGroup);
         lpass.setBindGroup(1, this.shadowSampleBindGroup);
+        lpass.setBindGroup(2, nearShadowSampleBindGroup);
         lpass.draw(3);
         lpass.end();
         // Forward overlay (water + vegetation) composited over the deferred-lit
