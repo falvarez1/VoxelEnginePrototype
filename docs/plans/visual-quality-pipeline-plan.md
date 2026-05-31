@@ -99,15 +99,19 @@ path is byte-for-byte unchanged and re-verified after every shared-module edit.
   integrated lake basins: terrain_height() (native + JS mirror) now carves smooth
   depressions into drainage-fed lowlands (value_noise2 + drainage mask, gated to
   lowland away from the river channel) so water sits in terrain basins; shipped via
-  the worldgen tile-generator version bump + refreshed regression baselines. Placing
-  dedicated water meshes at basin centers for more standalone lakes is a follow-up.
-- Upgrade 8 (assets/scenery): a default-off **procedural tree impostor framework**
-  — big-pine instances render as upright camera-facing billboards (procedural
-  conifer silhouette, per-instance tint, one quad/instance, one draw) reusing the
-  vegetation instance buffer, in both the compat and deferred veg passes. Gated by
+  the worldgen tile-generator version bump + refreshed regression baselines. Plus
+  basin-centered lakes: a deterministic scan places standalone lakes where the basin
+  field is strong and the carved terrain is low enough to pool (conservative,
+  drainage-gated, no misplaced water).
+- Upgrade 8 (assets/scenery): a default-off **procedural tree impostor LOD** —
+  big-pine instances within ~260m keep full mesh detail, beyond it they render as
+  upright camera-facing billboards (procedural conifer silhouette, per-instance
+  tint, one quad/instance) reusing the vegetation instance buffer, in both the
+  compat and deferred veg passes. The near/far split uses a WGSL `IMPOSTOR_LOD_DIST`
+  pipeline-override (default 0 = the normal pipeline is byte-identical). Gated by
   `RendererSettings.vegetationImpostors` (default false) + `__stormSetVegImpostors`.
-  Atlas bake (view-dependent angles), a near-mesh/far-impostor LOD split, triplanar
-  material textures, and settings-panel wiring remain.
+  An atlas bake (view-dependent angles) + triplanar material textures + settings-
+  panel wiring remain as fidelity follow-ups.
 - Upgrade 9 (profiles/automation): COMPLETE. Per-pass GPU timing in reports;
   query toggles `pass.shadow`/`pass.ssao`/`pass.bloom`; `renderGraph=compat|
   deferred`; and `visual.profile=cinematic|balanced|performance|flat` bundling
@@ -115,14 +119,17 @@ path is byte-for-byte unchanged and re-verified after every shared-module edit.
 - Upgrade 10 (game integration): render-graph mode is switchable at runtime
   without resetting game/edit state.
 
-Remaining: Upgrade 7/8 **fidelity follow-ups** (water meshes at carved basin centers
-for more standalone lakes; impostor atlas bake + near/far LOD split + triplanar
-textures); and the first-horizon **forward/compat-path** tuning (5 production water,
-7 dedicated scenery, 8 shadow/AO into the forward path) — largely superseded by the
-deferred path, and all default-experience visual tuning that should be done with the
-user's eyes. Every major plan item is implemented: the entire Photon deferred
+Remaining: Upgrade 8 **fidelity follow-ups** (impostor atlas bake for view-dependent
+angles + triplanar material textures + settings-panel wiring); and the first-horizon
+**forward/compat-path** tuning (5 production water, 7 dedicated scenery, 8 shadow/AO
+into the forward path) — largely superseded by the deferred path, and all
+default-experience visual tuning that should be done with the user's eyes. Every
+major plan item is implemented: the entire Photon deferred
 renderer (Upgrades 1-6 incl HDR, 7 water, 9, 10), cascaded shadows (4), the
-worldgen terrain-integrated lake basins (7), and the tree-impostor framework (8).
+worldgen terrain-integrated lake basins + basin lakes (7), and the tree-impostor
+LOD (8). An adversarial multi-agent review of the whole session's diff confirmed
+correctness and surfaced two real defects (a pre-existing C/JS fbm2 octave seam and
+a stale water-fallback comment), both fixed.
 
 Status as of 2026-05-25:
 
