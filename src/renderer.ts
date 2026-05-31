@@ -213,6 +213,11 @@ const VEGETATION_SHRUB_LOD_DISTANCE = 720;
 const VEGETATION_ROCK_LOD_DISTANCE = 2600;
 const VEGETATION_SMALL_PINE_LOD_DISTANCE = 3850;
 const VEGETATION_SMALL_PINE_SCALE = 6.0;
+// Distance (m) at which the optional tree-impostor LOD hands off: big pines within
+// this radius stay full mesh, beyond it they render as billboard impostors. Only
+// active when vegetationImpostors is on; baked into the near-veg pipeline as the
+// IMPOSTOR_LOD_DIST override and into the impostor shader's near cull.
+const VEGETATION_IMPOSTOR_LOD_DISTANCE = 260;
 const WATER_RECENTER_DISTANCE = 1024;
 const WATER_SEGMENTS = 560;
 const WATER_LAKE_RINGS = 5;
@@ -2964,6 +2969,10 @@ const VEG_SHRUB_LOD_SQ: f32 = ${VEGETATION_SHRUB_LOD_DISTANCE * VEGETATION_SHRUB
 const VEG_ROCK_LOD_SQ: f32 = ${VEGETATION_ROCK_LOD_DISTANCE * VEGETATION_ROCK_LOD_DISTANCE};
 const VEG_SMALL_PINE_LOD_SQ: f32 = ${VEGETATION_SMALL_PINE_LOD_DISTANCE * VEGETATION_SMALL_PINE_LOD_DISTANCE};
 const VEG_SMALL_PINE_SCALE: f32 = ${VEGETATION_SMALL_PINE_SCALE};
+// Pipeline-override LOD hand-off distance for the tree-impostor split. Default 0 =
+// disabled (the normal veg pipeline is byte-identical). The near-veg pipeline bakes
+// in the real distance so big pines beyond it are culled here and drawn as impostors.
+override IMPOSTOR_LOD_DIST: f32 = 0.0;
 
 struct VertexIn {
   @location(0) local: vec3<f32>,
@@ -3008,6 +3017,11 @@ fn vs_main(input: VertexIn) -> VertexOut {
     visible = 1.0;
   }
   if (!lodPasses) { visible = 0.0; }
+  // Impostor LOD split (only when IMPOSTOR_LOD_DIST > 0, i.e. the near-veg pipeline):
+  // big pines beyond the hand-off distance are culled here and drawn as billboards.
+  if (IMPOSTOR_LOD_DIST > 0.0 && input.kind >= 0.5 && input.kind < 1.5 && distSq > IMPOSTOR_LOD_DIST * IMPOSTOR_LOD_DIST) {
+    visible = 0.0;
+  }
   let windable = select(0.0, 1.0, input.kind < 1.5 && input.part > 0.5);
   let stiffness = mix(1.0, 0.34, clamp(input.aspect, 0.0, 1.0));
   let wind = sin(scene.params.x * 1.8 + input.seed + input.base.x * 0.04) * 0.055 * input.local.y * input.scale * windable * stiffness;
@@ -3181,9 +3195,13 @@ struct VOut {
 @vertex
 fn vs_main(inst: InstIn, @builtin(vertex_index) vid: u32) -> VOut {
   var out: VOut;
-  // Only big pines (tree kind) become impostors; collapse everything else to a
-  // degenerate point behind the far plane so it is clipped.
-  if (inst.kind < 0.5 || inst.kind >= 1.5) {
+  // Only big pines (tree kind) become impostors, and only beyond the LOD hand-off
+  // distance (near pines stay full mesh via the near-veg pipeline). Collapse
+  // everything else to a degenerate point behind the far plane so it is clipped.
+  let dxi = inst.base.x - scene.camera.x;
+  let dzi = inst.base.z - scene.camera.z;
+  let nearMesh = (dxi * dxi + dzi * dzi) < ${VEGETATION_IMPOSTOR_LOD_DISTANCE * VEGETATION_IMPOSTOR_LOD_DISTANCE}.0;
+  if (inst.kind < 0.5 || inst.kind >= 1.5 || nearMesh) {
     out.clip = vec4<f32>(0.0, 0.0, 2.0, 1.0);
     out.uv = vec2<f32>(0.0, 0.0);
     out.tint = 0.0;
@@ -3324,6 +3342,9 @@ export class Renderer {
   vegetationPipeline!: GPURenderPipeline;
   // Tree billboard impostors (Upgrade 8, default-off LOD framework).
   impostorPipeline!: GPURenderPipeline;
+  // Near-veg variant that culls big pines beyond the impostor hand-off distance
+  // (IMPOSTOR_LOD_DIST override); paired with impostorPipeline for the LOD split.
+  vegetationNearPipeline!: GPURenderPipeline;
   beaconPipeline!: GPURenderPipeline;
   terrainArenaPipeline!: GPURenderPipeline;
   // Deferred path (Upgrade 3): G-buffer geometry pipeline for the near terrain
@@ -4078,34 +4099,47 @@ export class Renderer {
     const treeMesh = makeTreeMesh();
     this.treeVertexCount = treeMesh.length / 7;
     this.treeVertexBuffer = this.createBufferWithData(treeMesh, GPUBufferUsage.VERTEX, 'tree mesh');
+    const vegVertexBuffers: GPUVertexBufferLayout[] = [
+      {
+        arrayStride: 7 * 4,
+        attributes: [
+          { shaderLocation: 0, offset: 0, format: 'float32x3' },
+          { shaderLocation: 1, offset: 3 * 4, format: 'float32x3' },
+          { shaderLocation: 2, offset: 6 * 4, format: 'float32' },
+        ],
+      },
+      {
+        arrayStride: 8 * 4,
+        stepMode: 'instance',
+        attributes: [
+          { shaderLocation: 3, offset: 0, format: 'float32x3' },
+          { shaderLocation: 4, offset: 3 * 4, format: 'float32' },
+          { shaderLocation: 5, offset: 4 * 4, format: 'float32' },
+          { shaderLocation: 6, offset: 5 * 4, format: 'float32' },
+          { shaderLocation: 7, offset: 6 * 4, format: 'float32' },
+          { shaderLocation: 8, offset: 7 * 4, format: 'float32' },
+        ],
+      },
+    ];
     this.vegetationPipeline = this.device.createRenderPipeline({
       label: 'vegetation pipeline',
+      layout: pipelineLayout,
+      vertex: { module: vegetationModule, entryPoint: 'vs_main', buffers: vegVertexBuffers },
+      fragment: { module: vegetationModule, entryPoint: 'fs_main', targets: [{ format: this.format }] },
+      primitive: { topology: 'triangle-list', cullMode: 'none' },
+      depthStencil: { format: DEPTH_FORMAT, depthWriteEnabled: true, depthCompare: 'less' },
+    });
+    // Near-veg variant for the impostor LOD split: identical, but the IMPOSTOR_LOD_DIST
+    // override is baked in so big pines beyond the hand-off distance are culled (drawn
+    // as impostors instead). Used only when vegetationImpostors is on.
+    this.vegetationNearPipeline = this.device.createRenderPipeline({
+      label: 'vegetation near pipeline (impostor LOD)',
       layout: pipelineLayout,
       vertex: {
         module: vegetationModule,
         entryPoint: 'vs_main',
-        buffers: [
-          {
-            arrayStride: 7 * 4,
-            attributes: [
-              { shaderLocation: 0, offset: 0, format: 'float32x3' },
-              { shaderLocation: 1, offset: 3 * 4, format: 'float32x3' },
-              { shaderLocation: 2, offset: 6 * 4, format: 'float32' },
-            ],
-          },
-          {
-            arrayStride: 8 * 4,
-            stepMode: 'instance',
-            attributes: [
-              { shaderLocation: 3, offset: 0, format: 'float32x3' },
-              { shaderLocation: 4, offset: 3 * 4, format: 'float32' },
-              { shaderLocation: 5, offset: 4 * 4, format: 'float32' },
-              { shaderLocation: 6, offset: 5 * 4, format: 'float32' },
-              { shaderLocation: 7, offset: 6 * 4, format: 'float32' },
-              { shaderLocation: 8, offset: 7 * 4, format: 'float32' },
-            ],
-          },
-        ],
+        buffers: vegVertexBuffers,
+        constants: { IMPOSTOR_LOD_DIST: VEGETATION_IMPOSTOR_LOD_DISTANCE },
       },
       fragment: { module: vegetationModule, entryPoint: 'fs_main', targets: [{ format: this.format }] },
       primitive: { topology: 'triangle-list', cullMode: 'none' },
@@ -5634,8 +5668,13 @@ export class Renderer {
             });
             vegPass.setBindGroup(0, this.uniformBindGroup);
             if (this.settings.vegetationImpostors) {
-              // Billboard impostors (Upgrade 8): one quad per instance from the
-              // instance buffer; shrubs/rocks collapse out in the shader.
+              // Impostor LOD split (Upgrade 8): near pines render as full mesh (the
+              // near pipeline culls big pines beyond the hand-off distance), far pines
+              // as billboard impostors (the impostor shader culls the near ones).
+              vegPass.setPipeline(this.vegetationNearPipeline);
+              vegPass.setVertexBuffer(0, this.treeVertexBuffer);
+              vegPass.setVertexBuffer(1, vegetationBatchBuffer);
+              vegPass.draw(this.treeVertexCount, vegetationInstances);
               vegPass.setPipeline(this.impostorPipeline);
               vegPass.setVertexBuffer(0, vegetationBatchBuffer);
               vegPass.draw(6, vegetationInstances);
@@ -5731,11 +5770,15 @@ export class Renderer {
 
     if (this.settings.vegetationEnabled && vegetationBatchBuffer && vegetationInstances > 0) {
       if (this.settings.vegetationImpostors) {
-        // Billboard impostors (Upgrade 8): one quad per instance; shrubs/rocks
-        // collapse out in the shader.
+        // Impostor LOD split (Upgrade 8): near pines full mesh, far pines billboards.
+        pass.setPipeline(this.vegetationNearPipeline);
+        pass.setVertexBuffer(0, this.treeVertexBuffer);
+        pass.setVertexBuffer(1, vegetationBatchBuffer);
+        pass.draw(this.treeVertexCount, vegetationInstances);
         pass.setPipeline(this.impostorPipeline);
         pass.setVertexBuffer(0, vegetationBatchBuffer);
         pass.draw(6, vegetationInstances);
+        drawCalls++;
       } else {
         pass.setPipeline(this.vegetationPipeline);
         pass.setVertexBuffer(0, this.treeVertexBuffer);
