@@ -130,7 +130,11 @@ export function terrainHeight(x: number, z: number): number {
   h += terrace * canyon * 2.5;
   const shoulder = smooth(clamp((dist - 16.0) / 96.0, 0.0, 1.0)) * (1.0 - smooth(clamp((dist - 172.0) / 260.0, 0.0, 1.0)));
   const sideFold = ridge2((x - rc) * 0.020 + z * 0.005, z * 0.012 - rc * 0.003);
-  const basinRoll = fbm2((x - rc) * 0.018 + 29.0, z * 0.018 - 12.0, 3);
+  // 5 octaves (default) to match native fbm2 exactly — voxel_core.c's fbm2 is
+  // hardcoded to 5, so passing 3 here diverged the JS mirror and seamed the near
+  // (WASM) vs far (JS) terrain in the canyon-shoulder band (and perturbed the basin
+  // carve below, which reads h via drainageMask).
+  const basinRoll = fbm2((x - rc) * 0.018 + 29.0, z * 0.018 - 12.0);
   h += (sideFold * (7.5 + alpineLift * 5.5) + basinRoll * 4.0) * shoulder;
 
   const exposed = clamp((continent + 0.1) * 0.8 + ridgeMask * 0.45, 0.0, 1.0);

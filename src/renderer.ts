@@ -5449,9 +5449,13 @@ export class Renderer {
         const drawWater = this.settings.waterEnabled && this.water !== null;
         const drawVeg = this.settings.vegetationEnabled && vegetationBatchBuffer !== null && vegetationInstances > 0;
         // Refracting water needs the offscreen scene target (so it can be snapshotted
-        // as the refraction source); when present, copy the lit scene before the
-        // water draws. Falls back to the plain water pipeline if there is no scene
-        // target (direct-to-swapchain).
+        // as the refraction source); copy the lit scene before the water draws. In
+        // deferred mode sceneColor + refractionSource are co-allocated with the rest
+        // of the deferred targets, so they are both present whenever the deferred
+        // present runs — refractWater is therefore effectively == drawWater here.
+        // (If the scene target were ever absent the whole deferred present is skipped
+        // and nothing reaches the swapchain, so a separate plain-water fallback would
+        // be moot; water is only drawn on the refracting path.)
         const refractionTex = this.renderTargets.refractionSourceTexture;
         const refractWater = drawWater && sceneColorTex !== null && refractionTex !== null;
         if (refractWater && sceneColorTex && refractionTex) {
