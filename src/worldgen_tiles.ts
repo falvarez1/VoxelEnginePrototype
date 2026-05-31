@@ -50,7 +50,9 @@ const FIELD_STREAM_POWER = 31;
 const FIELD_COUNT = 32;
 
 export const WORLDGEN_TILE_SCHEMA_VERSION = 4;
-export const WORLDGEN_TILE_GENERATOR_VERSION = 5;
+// 6: terrain_height() now carves lake basins into drainage lowlands (Upgrade 7),
+// which shifts the height/drainage/flow fields — invalidate persisted worldgen tiles.
+export const WORLDGEN_TILE_GENERATOR_VERSION = 6;
 export const WORLDGEN_TILE_SIZE = 256;
 export const WORLDGEN_TILE_RESOLUTION = 17;
 const WORLDGEN_TILE_WORKER_QUEUE_LIMIT = 96;

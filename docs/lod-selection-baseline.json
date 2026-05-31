@@ -2744,7 +2744,7 @@
         "vertexCount": 643,
         "triangleCount": 648,
         "overflow": 0,
-        "recordHash": "sha256:99a737f6ad79bb24",
+        "recordHash": "sha256:569cf98dbba3a5f4",
         "records": [
           {
             "side": "negX",
@@ -2839,7 +2839,7 @@
               54.204,
               192
             ],
-            "vertexHash": "sha256:70ce1255ce0bbdb4",
+            "vertexHash": "sha256:b449b06b4fd93092",
             "indexHash": "sha256:665e4ac690e1a761"
           },
           {
@@ -2855,7 +2855,7 @@
               57.104,
               129
             ],
-            "vertexHash": "sha256:3f0a784808b61fae",
+            "vertexHash": "sha256:0d67d7e8cb485265",
             "indexHash": "sha256:7b3144ee96a16f44"
           },
           {
@@ -5894,7 +5894,7 @@
         "vertexCount": 2269,
         "triangleCount": 2284,
         "overflow": 0,
-        "recordHash": "sha256:6ac4673fb05f8c2f",
+        "recordHash": "sha256:88583267c6d0250a",
         "records": [
           {
             "side": "negX",
@@ -5989,7 +5989,7 @@
               55.275,
               96
             ],
-            "vertexHash": "sha256:5d090f884d2e15b1",
+            "vertexHash": "sha256:e5c27316513e8b74",
             "indexHash": "sha256:b4c807d732501579"
           },
           {
@@ -9044,7 +9044,7 @@
         "vertexCount": 4321,
         "triangleCount": 4367,
         "overflow": 0,
-        "recordHash": "sha256:b3236406bce3d3f5",
+        "recordHash": "sha256:109b7fe57bd952df",
         "records": [
           {
             "side": "negX",
@@ -9123,7 +9123,7 @@
               -10.769,
               129
             ],
-            "vertexHash": "sha256:2c537a250a1857d5",
+            "vertexHash": "sha256:ec8724e85a59a4a4",
             "indexHash": "sha256:7b3144ee96a16f44"
           },
           {
@@ -9187,7 +9187,7 @@
               -12.505,
               193
             ],
-            "vertexHash": "sha256:29f4c6cfff12a154",
+            "vertexHash": "sha256:69854b5348d82f2e",
             "indexHash": "sha256:7b3144ee96a16f44"
           },
           {

@@ -37,7 +37,9 @@
 #define WORLDGEN_TILE_FIELD_COUNT 32
 #define WORLDGEN_TILE_SIZE 256.0f
 #define EROSION_TILE_SCHEMA_VERSION 1
-#define EROSION_TILE_GENERATOR_VERSION 2
+// 3: terrain_height() now carves lake basins (Upgrade 7); erosion runs on the
+// heightfield, so its output shifts — invalidate persisted erosion tiles.
+#define EROSION_TILE_GENERATOR_VERSION 3
 #define EROSION_TILE_RESOLUTION 17
 #define EROSION_TILE_SAMPLE_COUNT (EROSION_TILE_RESOLUTION * EROSION_TILE_RESOLUTION)
 #define EROSION_TILE_FIELD_COUNT 11
@@ -56,7 +58,9 @@
 #define EROSION_SIM_HEIGHT_LOSS_NORMALIZER 12.0f
 #define EROSION_SIM_SEDIMENT_NORMALIZER 8.0f
 #define MATERIAL_TILE_SCHEMA_VERSION 1
-#define MATERIAL_TILE_GENERATOR_VERSION 1
+// 2: terrain_height() now carves lake basins (Upgrade 7); material classification
+// keys off height/slope, so basin floors reclassify — invalidate material tiles.
+#define MATERIAL_TILE_GENERATOR_VERSION 2
 #define MATERIAL_TILE_RESOLUTION 17
 #define MATERIAL_TILE_SAMPLE_COUNT (MATERIAL_TILE_RESOLUTION * MATERIAL_TILE_RESOLUTION)
 #define MATERIAL_TILE_FIELD_COUNT 12
@@ -367,6 +371,8 @@ static float river_center(float z) {
     return n1 * 42.0f + n2 * 12.0f;
 }
 
+static float drainage_mask_from_height(float x, float z, float h);
+
 static float terrain_height(float x, float z) {
     float continent = macro_continent(x, z);
     float moisture = macro_moisture(x, z);
@@ -398,6 +404,19 @@ static float terrain_height(float x, float z) {
 
     float exposed = clampf((continent + 0.1f) * 0.8f + ridge_mask * 0.45f, 0.0f, 1.0f);
     h += surface_detail_noise(x, z) * exposed * (1.0f - canyon * 0.55f);
+
+    // Lake basins (Photon Upgrade 7): carve smooth rounded depressions into
+    // drainage-fed lowlands (away from the already-carved river channel) so water
+    // collects into discrete terrain basins instead of only the river. Built only
+    // from value_noise2 + the drainage mask so the JS terrainHeight() mirror matches
+    // exactly (a mismatch would seam near vs far terrain). Bumped the worldgen tile
+    // generator version since this changes terrain output.
+    float lb_drain = drainage_mask_from_height(x, z, h);
+    float lb_field = value_noise2(x * 0.0045f + 51.0f, z * 0.0045f - 23.0f);
+    float lb_pockets = smooth(clampf((lb_field - 0.52f) / 0.22f, 0.0f, 1.0f));
+    float lb_low = clampf(1.0f - (h - 9.0f) / 16.0f, 0.0f, 1.0f);
+    float lb_basin = smooth(lb_pockets * lb_drain * lb_low * (1.0f - canyon));
+    h -= lb_basin * 6.5f;
     return h;
 }
 

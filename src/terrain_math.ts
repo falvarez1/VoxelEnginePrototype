@@ -135,6 +135,16 @@ export function terrainHeight(x: number, z: number): number {
 
   const exposed = clamp((continent + 0.1) * 0.8 + ridgeMask * 0.45, 0.0, 1.0);
   h += surfaceDetailNoise(x, z) * exposed * (1.0 - canyon * 0.55);
+
+  // Lake basins (Photon Upgrade 7): exact mirror of native terrain_height()'s basin
+  // carve — smooth depressions in drainage-fed lowlands away from the river channel.
+  // Must stay byte-identical to the C version or near/far terrain will seam.
+  const lbDrain = drainageMask(x, z, h);
+  const lbField = valueNoise2(x * 0.0045 + 51.0, z * 0.0045 - 23.0);
+  const lbPockets = smooth(clamp((lbField - 0.52) / 0.22, 0.0, 1.0));
+  const lbLow = clamp(1.0 - (h - 9.0) / 16.0, 0.0, 1.0);
+  const lbBasin = smooth(lbPockets * lbDrain * lbLow * (1.0 - canyon));
+  h -= lbBasin * 6.5;
   return h;
 }
 
