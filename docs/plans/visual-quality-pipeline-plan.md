@@ -97,6 +97,13 @@ path is byte-for-byte unchanged and re-verified after every shared-module edit.
   marches the G-buffer world for a hit, blending the lit terrain reflection over
   the fresnel sky tint (fresnel-weighted, edge/distance-faded). Terrain-integrated
   lake basins (worldgen) remain.
+- Upgrade 8 (assets/scenery): a default-off **procedural tree impostor framework**
+  — big-pine instances render as upright camera-facing billboards (procedural
+  conifer silhouette, per-instance tint, one quad/instance, one draw) reusing the
+  vegetation instance buffer, in both the compat and deferred veg passes. Gated by
+  `RendererSettings.vegetationImpostors` (default false) + `__stormSetVegImpostors`.
+  Atlas bake (view-dependent angles), a near-mesh/far-impostor LOD split, triplanar
+  material textures, and settings-panel wiring remain.
 - Upgrade 9 (profiles/automation): COMPLETE. Per-pass GPU timing in reports;
   query toggles `pass.shadow`/`pass.ssao`/`pass.bloom`; `renderGraph=compat|
   deferred`; and `visual.profile=cinematic|balanced|performance|flat` bundling
@@ -104,11 +111,13 @@ path is byte-for-byte unchanged and re-verified after every shared-module edit.
 - Upgrade 10 (game integration): render-graph mode is switchable at runtime
   without resetting game/edit state.
 
-Remaining (genuinely multi-session): Upgrade 7 lake basins in worldgen + SSR,
-Upgrade 8 (asset/impostor pipeline + triplanar/material textures), Upgrade 4
-stage 4 (cascaded shadow maps), the SSAO blur + HDR-bloom pyramid, and the
-first-horizon phases still needing work (5 production water, 7 dedicated scenery,
-8 real shadow/AO tuning into the forward path).
+Remaining (genuinely needs direction/sign-off): Upgrade 7 **terrain-integrated lake
+basins** (a worldgen/native-sim change — needs a tile-generator version bump +
+`worldgen:regression --update`, confirm first per the WASM/native notes); Upgrade 8
+fidelity follow-ups (atlas bake, near/far LOD split, triplanar textures); and the
+first-horizon phases on the compat/default path (5 production water, 7 dedicated
+scenery, 8 real shadow/AO tuning) — all visual tuning of the default experience.
+The entire flag-isolated deferred renderer track is complete.
 
 Status as of 2026-05-25:
 
