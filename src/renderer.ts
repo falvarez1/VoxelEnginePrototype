@@ -1384,13 +1384,8 @@ fn fs_main(input: VOut) -> @location(0) vec4<f32> {
   return textureSampleLevel(srcTex, srcSampler, input.uv, 0.0);
 }`;
 
-// Bloom + present (Photon Upgrade 6). Final deferred stage: reads the offscreen
-// scene colour, adds a soft glow sampled from bright (above-threshold) pixels in
-// a multi-ring disc, and writes the swapchain. Single-pass (a downsampled blur
-// pyramid is a follow-up); cheap and gives bright snow/sky/water-glint haloing.
-const BLOOM_SHADER = /* wgsl */`
-@group(0) @binding(0) var sceneTex: texture_2d<f32>;
-@group(0) @binding(1) var sceneSampler: sampler;
+// Shared fullscreen-triangle vertex stage for the bloom chain shaders below.
+const BLOOM_FULLSCREEN_VS = `
 struct VOut {
   @builtin(position) clip: vec4<f32>,
   @location(0) uv: vec2<f32>,
@@ -1403,23 +1398,71 @@ fn vs_main(@builtin(vertex_index) vid: u32) -> VOut {
   out.clip = vec4<f32>(xy, 0.0, 1.0);
   out.uv = vec2<f32>(xy.x * 0.5 + 0.5, 1.0 - (xy.y * 0.5 + 0.5));
   return out;
+}`;
+
+// Bloom prefilter (Photon Upgrade 6 blur pyramid, stage 1). Downsamples the scene
+// to half-res with a 4-tap box and keeps only the bright pass via a soft-knee
+// threshold (Karis), so the glow ramps in smoothly instead of hard-clipping.
+const BLOOM_PREFILTER_SHADER = /* wgsl */`
+@group(0) @binding(0) var sceneTex: texture_2d<f32>;
+@group(0) @binding(1) var sceneSampler: sampler;
+${BLOOM_FULLSCREEN_VS}
+@fragment
+fn fs_main(input: VOut) -> @location(0) vec4<f32> {
+  let texel = 1.0 / vec2<f32>(textureDimensions(sceneTex));
+  var c = textureSampleLevel(sceneTex, sceneSampler, input.uv + vec2<f32>(-0.5, -0.5) * texel, 0.0).rgb;
+  c = c + textureSampleLevel(sceneTex, sceneSampler, input.uv + vec2<f32>( 0.5, -0.5) * texel, 0.0).rgb;
+  c = c + textureSampleLevel(sceneTex, sceneSampler, input.uv + vec2<f32>(-0.5,  0.5) * texel, 0.0).rgb;
+  c = c + textureSampleLevel(sceneTex, sceneSampler, input.uv + vec2<f32>( 0.5,  0.5) * texel, 0.0).rgb;
+  c = c * 0.25;
+  let threshold = 0.70;
+  let knee = 0.25;
+  let br = max(c.r, max(c.g, c.b));
+  let soft = clamp(br - threshold + knee, 0.0, 2.0 * knee);
+  let contrib = max(soft * soft / (4.0 * knee + 0.0001), max(br - threshold, 0.0)) / max(br, 0.0001);
+  return vec4<f32>(c * contrib, 1.0);
+}`;
+
+// Bloom separable Gaussian (Photon Upgrade 6 blur pyramid, stage 2). A 9-tap
+// Gaussian run horizontally then vertically over the half-res bright pass gives a
+// wide, soft glow that the single-pass disc could not. Two entry points share one
+// blur body so a single module drives both axes.
+const BLOOM_BLUR_SHADER = /* wgsl */`
+@group(0) @binding(0) var srcTex: texture_2d<f32>;
+@group(0) @binding(1) var srcSampler: sampler;
+${BLOOM_FULLSCREEN_VS}
+fn blur(uv: vec2<f32>, dir: vec2<f32>) -> vec3<f32> {
+  let texel = 1.0 / vec2<f32>(textureDimensions(srcTex));
+  var w = array<f32, 5>(0.227027, 0.1945946, 0.1216216, 0.054054, 0.016216);
+  var col = textureSampleLevel(srcTex, srcSampler, uv, 0.0).rgb * w[0];
+  for (var i = 1; i < 5; i = i + 1) {
+    let off = dir * texel * f32(i);
+    col = col + textureSampleLevel(srcTex, srcSampler, uv + off, 0.0).rgb * w[i];
+    col = col + textureSampleLevel(srcTex, srcSampler, uv - off, 0.0).rgb * w[i];
+  }
+  return col;
 }
+@fragment
+fn fs_h(input: VOut) -> @location(0) vec4<f32> { return vec4<f32>(blur(input.uv, vec2<f32>(1.0, 0.0)), 1.0); }
+@fragment
+fn fs_v(input: VOut) -> @location(0) vec4<f32> { return vec4<f32>(blur(input.uv, vec2<f32>(0.0, 1.0)), 1.0); }`;
+
+// Bloom present (Photon Upgrade 6 blur pyramid, stage 3). Adds the blurred half-res
+// glow (linearly upsampled by the sampler) back over the scene, then applies the
+// teal-orange cinematic grade + vignette, and writes the swapchain. (Full HDR scene
+// target + multi-mip pyramid remain a follow-up — the sky/water shaders are shared
+// with the compat path and tone-map themselves, so going HDR needs a separate
+// deferred-only copy of those rather than a scene-format change here.)
+const BLOOM_SHADER = /* wgsl */`
+@group(0) @binding(0) var sceneTex: texture_2d<f32>;
+@group(0) @binding(1) var bloomTex: texture_2d<f32>;
+@group(0) @binding(2) var sceneSampler: sampler;
+${BLOOM_FULLSCREEN_VS}
 @fragment
 fn fs_main(input: VOut) -> @location(0) vec4<f32> {
   let scene = textureSampleLevel(sceneTex, sceneSampler, input.uv, 0.0).rgb;
-  let threshold = vec3<f32>(0.70);
-  var bloom = vec3<f32>(0.0);
-  var wsum = 0.0;
-  for (var i = 0; i < 24; i = i + 1) {
-    let ang = f32(i) * 0.2617994;
-    let ring = 0.0035 + 0.0075 * f32(i % 6) / 5.0;
-    let w = 1.0 - 0.6 * f32(i % 6) / 5.0;
-    let s = textureSampleLevel(sceneTex, sceneSampler, input.uv + vec2<f32>(cos(ang), sin(ang)) * ring, 0.0).rgb;
-    bloom = bloom + max(s - threshold, vec3<f32>(0.0)) * w;
-    wsum = wsum + w;
-  }
-  bloom = bloom / max(wsum, 0.0001);
-  var graded = scene + bloom * 1.6;
+  let bloom = textureSampleLevel(bloomTex, sceneSampler, input.uv, 0.0).rgb;
+  var graded = scene + bloom * 0.9;
   // Subtle teal-orange cinematic color grade (Photon Upgrade 6): cool the
   // shadows toward blue-teal, warm the highlights, by luma — a gentle filmic
   // split-tone kept near 1.0 so it reads as cohesion, not a heavy LUT.
@@ -3128,7 +3171,13 @@ export class Renderer {
   compositeSampler!: GPUSampler;
   deferredLightPipeline!: GPURenderPipeline;
   deferredLightBindGroupLayout!: GPUBindGroupLayout;
+  // Bloom blur pyramid (Upgrade 6 blur): prefilter (scene -> half-res bright pass)
+  // + separable Gaussian (H then V) + present (scene + glow + grade/vignette).
   bloomPipeline!: GPURenderPipeline;
+  bloomPrefilterPipeline!: GPURenderPipeline;
+  bloomBlurHPipeline!: GPURenderPipeline;
+  bloomBlurVPipeline!: GPURenderPipeline;
+  bloomCompositeBindGroupLayout!: GPUBindGroupLayout;
   // SSAO compute + box-blur passes (Upgrade 5 blur): write a smoothed AO target
   // that the lighting pass samples instead of computing AO inline. Deferred-only.
   ssaoPipeline!: GPURenderPipeline;
@@ -3563,12 +3612,47 @@ export class Renderer {
       primitive: { topology: 'triangle-list', cullMode: 'none' },
     });
 
-    // Bloom + present pipeline (deferred post chain). Reuses the composite bind
-    // group layout (texture + sampler).
+    // Bloom blur pyramid (deferred post chain). Prefilter + separable Gaussian run
+    // on half-res rgba16float targets; the present pass adds the glow back and
+    // applies the grade/vignette to the swapchain.
+    const bloomPrefilterModule = this.createShaderModuleChecked('bloom prefilter shader', BLOOM_PREFILTER_SHADER);
+    const bloomBlurModule = this.createShaderModuleChecked('bloom blur shader', BLOOM_BLUR_SHADER);
     const bloomModule = this.createShaderModuleChecked('bloom shader', BLOOM_SHADER);
+    // Prefilter + blur passes read one texture + sampler (composite layout) and
+    // write the half-res rgba16float bloom targets.
+    this.bloomPrefilterPipeline = this.device.createRenderPipeline({
+      label: 'bloom prefilter pipeline',
+      layout: this.device.createPipelineLayout({ bindGroupLayouts: [this.compositeBindGroupLayout] }),
+      vertex: { module: bloomPrefilterModule, entryPoint: 'vs_main' },
+      fragment: { module: bloomPrefilterModule, entryPoint: 'fs_main', targets: [{ format: 'rgba16float' }] },
+      primitive: { topology: 'triangle-list', cullMode: 'none' },
+    });
+    this.bloomBlurHPipeline = this.device.createRenderPipeline({
+      label: 'bloom blur-h pipeline',
+      layout: this.device.createPipelineLayout({ bindGroupLayouts: [this.compositeBindGroupLayout] }),
+      vertex: { module: bloomBlurModule, entryPoint: 'vs_main' },
+      fragment: { module: bloomBlurModule, entryPoint: 'fs_h', targets: [{ format: 'rgba16float' }] },
+      primitive: { topology: 'triangle-list', cullMode: 'none' },
+    });
+    this.bloomBlurVPipeline = this.device.createRenderPipeline({
+      label: 'bloom blur-v pipeline',
+      layout: this.device.createPipelineLayout({ bindGroupLayouts: [this.compositeBindGroupLayout] }),
+      vertex: { module: bloomBlurModule, entryPoint: 'vs_main' },
+      fragment: { module: bloomBlurModule, entryPoint: 'fs_v', targets: [{ format: 'rgba16float' }] },
+      primitive: { topology: 'triangle-list', cullMode: 'none' },
+    });
+    // Present reads two textures (scene + blurred glow) + sampler.
+    this.bloomCompositeBindGroupLayout = this.device.createBindGroupLayout({
+      label: 'bloom composite bind group layout',
+      entries: [
+        { binding: 0, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'float' } },
+        { binding: 1, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'float' } },
+        { binding: 2, visibility: GPUShaderStage.FRAGMENT, sampler: { type: 'filtering' } },
+      ],
+    });
     this.bloomPipeline = this.device.createRenderPipeline({
       label: 'bloom pipeline',
-      layout: this.device.createPipelineLayout({ bindGroupLayouts: [this.compositeBindGroupLayout] }),
+      layout: this.device.createPipelineLayout({ bindGroupLayouts: [this.bloomCompositeBindGroupLayout] }),
       vertex: { module: bloomModule, entryPoint: 'vs_main' },
       fragment: { module: bloomModule, entryPoint: 'fs_main', targets: [{ format: this.format }] },
       primitive: { topology: 'triangle-list', cullMode: 'none' },
@@ -5089,28 +5173,97 @@ export class Renderer {
           }
           opass.end();
         }
-        // Bloom + present: composite the offscreen scene colour to the swapchain
-        // with a soft glow on bright (above-threshold) pixels (Photon Upgrade 6).
+        // Bloom blur pyramid + present (Photon Upgrade 6): a half-res prefilter +
+        // separable Gaussian build a wide soft glow the present pass adds back over
+        // the scene before the grade/vignette. pass.bloom=0 (or the performance/flat
+        // profiles) skips the chain and presents a plain composite.
         if (sceneColorTex) {
-          const bloomBindGroup = this.device.createBindGroup({
-            layout: this.compositeBindGroupLayout,
-            entries: [
-              { binding: 0, resource: sceneTargetView },
-              { binding: 1, resource: this.compositeSampler },
-            ],
-          });
-          // pass.bloom=0 presents the scene with no glow (plain composite) for
-          // comparison / perf; otherwise the bloom pipeline adds the halo.
           const bloomOn = this.frameGraph.isEnabled('deferred-bloom');
-          const bpass = encoder.beginRenderPass({
-            label: 'deferred bloom present pass',
-            colorAttachments: [{ view: colorView, clearValue: { r: 0, g: 0, b: 0, a: 1 }, loadOp: 'clear', storeOp: 'store' }],
-            timestampWrites: this.frameGraph.timed('deferred-bloom', 'render', false),
-          });
-          bpass.setPipeline(bloomOn ? this.bloomPipeline : this.compositePipeline);
-          bpass.setBindGroup(0, bloomBindGroup);
-          bpass.draw(3);
-          bpass.end();
+          const bloomA = this.renderTargets.bloomHalfATexture;
+          const bloomB = this.renderTargets.bloomHalfBTexture;
+          if (bloomOn && bloomA && bloomB) {
+            const aView = bloomA.createView();
+            const bView = bloomB.createView();
+            // 1. Prefilter: scene -> half-res bright pass (A).
+            const prefilterPass = encoder.beginRenderPass({
+              label: 'bloom prefilter pass',
+              colorAttachments: [{ view: aView, clearValue: { r: 0, g: 0, b: 0, a: 1 }, loadOp: 'clear', storeOp: 'store' }],
+              timestampWrites: this.frameGraph.timed('deferred-bloom', 'render', false),
+            });
+            prefilterPass.setPipeline(this.bloomPrefilterPipeline);
+            prefilterPass.setBindGroup(0, this.device.createBindGroup({
+              layout: this.compositeBindGroupLayout,
+              entries: [
+                { binding: 0, resource: sceneTargetView },
+                { binding: 1, resource: this.compositeSampler },
+              ],
+            }));
+            prefilterPass.draw(3);
+            prefilterPass.end();
+            // 2. Horizontal Gaussian: A -> B.
+            const blurHPass = encoder.beginRenderPass({
+              label: 'bloom blur-h pass',
+              colorAttachments: [{ view: bView, clearValue: { r: 0, g: 0, b: 0, a: 1 }, loadOp: 'clear', storeOp: 'store' }],
+            });
+            blurHPass.setPipeline(this.bloomBlurHPipeline);
+            blurHPass.setBindGroup(0, this.device.createBindGroup({
+              layout: this.compositeBindGroupLayout,
+              entries: [
+                { binding: 0, resource: aView },
+                { binding: 1, resource: this.compositeSampler },
+              ],
+            }));
+            blurHPass.draw(3);
+            blurHPass.end();
+            // 3. Vertical Gaussian: B -> A.
+            const blurVPass = encoder.beginRenderPass({
+              label: 'bloom blur-v pass',
+              colorAttachments: [{ view: aView, clearValue: { r: 0, g: 0, b: 0, a: 1 }, loadOp: 'clear', storeOp: 'store' }],
+            });
+            blurVPass.setPipeline(this.bloomBlurVPipeline);
+            blurVPass.setBindGroup(0, this.device.createBindGroup({
+              layout: this.compositeBindGroupLayout,
+              entries: [
+                { binding: 0, resource: bView },
+                { binding: 1, resource: this.compositeSampler },
+              ],
+            }));
+            blurVPass.draw(3);
+            blurVPass.end();
+            // 4. Present: scene + glow -> swapchain (grade + vignette in-shader).
+            const presentPass = encoder.beginRenderPass({
+              label: 'bloom present pass',
+              colorAttachments: [{ view: colorView, clearValue: { r: 0, g: 0, b: 0, a: 1 }, loadOp: 'clear', storeOp: 'store' }],
+            });
+            presentPass.setPipeline(this.bloomPipeline);
+            presentPass.setBindGroup(0, this.device.createBindGroup({
+              layout: this.bloomCompositeBindGroupLayout,
+              entries: [
+                { binding: 0, resource: sceneTargetView },
+                { binding: 1, resource: aView },
+                { binding: 2, resource: this.compositeSampler },
+              ],
+            }));
+            presentPass.draw(3);
+            presentPass.end();
+          } else {
+            // Bloom off: plain composite of the scene colour to the swapchain.
+            const presentPass = encoder.beginRenderPass({
+              label: 'deferred present pass',
+              colorAttachments: [{ view: colorView, clearValue: { r: 0, g: 0, b: 0, a: 1 }, loadOp: 'clear', storeOp: 'store' }],
+              timestampWrites: this.frameGraph.timed('deferred-bloom', 'render', false),
+            });
+            presentPass.setPipeline(this.compositePipeline);
+            presentPass.setBindGroup(0, this.device.createBindGroup({
+              layout: this.compositeBindGroupLayout,
+              entries: [
+                { binding: 0, resource: sceneTargetView },
+                { binding: 1, resource: this.compositeSampler },
+              ],
+            }));
+            presentPass.draw(3);
+            presentPass.end();
+          }
         }
       }
     } else {

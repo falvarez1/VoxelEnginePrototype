@@ -57,6 +57,12 @@ export class RenderTargets {
   // Single-channel (r8unorm); canvas-sized; deferred-only.
   private ssaoRawTex: GPUTexture | null = null;
   private ssaoBlurTex: GPUTexture | null = null;
+  // Half-resolution bloom ping-pong targets (Upgrade 6 blur pyramid): a prefilter
+  // pass downsamples the scene's bright pass into A, then a separable Gaussian
+  // blurs A->B (horizontal) and B->A (vertical) for a wide, soft glow the present
+  // pass adds back. rgba16float to avoid banding in the dim glow; deferred-only.
+  private bloomHalfA: GPUTexture | null = null;
+  private bloomHalfB: GPUTexture | null = null;
   width = 0;
   height = 0;
 
@@ -139,6 +145,17 @@ export class RenderTargets {
       label: 'ssao blurred', size, format: 'r8unorm',
       usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING,
     });
+    const halfSize: [number, number] = [Math.max(1, this.width >> 1), Math.max(1, this.height >> 1)];
+    this.bloomHalfA?.destroy();
+    this.bloomHalfA = this.device.createTexture({
+      label: 'bloom half A', size: halfSize, format: 'rgba16float',
+      usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING,
+    });
+    this.bloomHalfB?.destroy();
+    this.bloomHalfB = this.device.createTexture({
+      label: 'bloom half B', size: halfSize, format: 'rgba16float',
+      usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING,
+    });
   }
 
   // Turn on the deferred targets at runtime (lazy: compat sessions never pay the
@@ -160,6 +177,8 @@ export class RenderTargets {
   get refractionSourceTexture(): GPUTexture | null { return this.refractionSourceTex; }
   get ssaoRawTexture(): GPUTexture | null { return this.ssaoRawTex; }
   get ssaoBlurTexture(): GPUTexture | null { return this.ssaoBlurTex; }
+  get bloomHalfATexture(): GPUTexture | null { return this.bloomHalfA; }
+  get bloomHalfBTexture(): GPUTexture | null { return this.bloomHalfB; }
 
   destroy(): void {
     this.depthTex?.destroy();
@@ -178,6 +197,10 @@ export class RenderTargets {
     this.ssaoRawTex = null;
     this.ssaoBlurTex?.destroy();
     this.ssaoBlurTex = null;
+    this.bloomHalfA?.destroy();
+    this.bloomHalfA = null;
+    this.bloomHalfB?.destroy();
+    this.bloomHalfB = null;
     this.shadowTex.destroy();
   }
 }
