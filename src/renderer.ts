@@ -2735,6 +2735,8 @@ ${SCENE_WGSL}
 // Refraction source: the lit scene behind the water (group 1, deferred-only).
 @group(1) @binding(0) var refractTex: texture_2d<f32>;
 @group(1) @binding(1) var refractSamp: sampler;
+// G-buffer camera-relative world position, for the SSR ray-march hit test.
+@group(1) @binding(2) var worldTex: texture_2d<f32>;
 struct VertexIn {
   @location(0) position: vec3<f32>,
   @location(1) normal: vec3<f32>,
@@ -2772,6 +2774,34 @@ fn water_wave_normal(p: vec2<f32>, t: f32) -> vec3<f32> {
   slope = slope + dB * (0.18 * 0.128 * cos(phB));
   return normalize(vec3<f32>(-slope.x, 1.0, -slope.y));
 }
+// Screen-space reflection (Photon Upgrade 7 stage 3). March the reflected view ray
+// in camera-relative space; where it crosses behind the G-buffer surface, return
+// the lit scene colour there (the snapshot taken before the water drew) as the
+// reflection, plus an alpha that fades near screen edges and with march distance to
+// hide the usual SSR streaking. Returns alpha 0 on a miss (sky / off-screen / no
+// crossing) so the caller falls back to the flat fresnel sky tint.
+fn screen_reflection(startRel: vec3<f32>, dir: vec3<f32>, baseDist: f32) -> vec4<f32> {
+  var stepLen = max(0.6, baseDist * 0.012);
+  var p = startRel;
+  for (var i = 0; i < 24; i = i + 1) {
+    p = p + dir * stepLen;
+    let clip = scene.viewProjRel * vec4<f32>(p, 1.0);
+    if (clip.w <= 0.0) { return vec4<f32>(0.0); }
+    let ndc = clip.xyz / clip.w;
+    if (abs(ndc.x) > 1.0 || abs(ndc.y) > 1.0) { return vec4<f32>(0.0); }
+    let uv = vec2<f32>(ndc.x * 0.5 + 0.5, ndc.y * -0.5 + 0.5);
+    let surfRel = textureSampleLevel(worldTex, refractSamp, uv, 0.0).xyz;
+    if (dot(surfRel, surfRel) < 1.0) { stepLen = stepLen * 1.14; continue; }
+    let diff = length(p) - length(surfRel);
+    if (diff > 0.0 && diff < stepLen * 2.0 + 1.5) {
+      let edge = min(min(uv.x, 1.0 - uv.x), min(uv.y, 1.0 - uv.y));
+      let fade = smoothstep(0.0, 0.10, edge) * (1.0 - f32(i) / 24.0);
+      return vec4<f32>(textureSampleLevel(refractTex, refractSamp, uv, 0.0).rgb, fade);
+    }
+    stepLen = stepLen * 1.14;
+  }
+  return vec4<f32>(0.0);
+}
 
 @fragment
 fn fs_main(input: VertexOut) -> @location(0) vec4<f32> {
@@ -2806,6 +2836,14 @@ fn fs_main(input: VertexOut) -> @location(0) vec4<f32> {
   let waterFog = mix(vec3<f32>(0.36, 0.50, 0.60), vec3<f32>(0.96, 0.62, 0.28), clamp(sunSide * 0.66 + lowSun * 0.08, 0.0, 1.0));
   color = mix(color, waterFog, fog * 0.86);
   color = pow((color * scene.visual.x) / (color * scene.visual.x + vec3<f32>(1.0)), vec3<f32>(1.0 / 2.2));
+
+  // Screen-space reflection: reflect the view ray off the wave normal and march the
+  // G-buffer for the lit terrain behind it, blending any hit in over the flat sky
+  // tint. Fresnel-weighted so it only shows at grazing angles (where reflections
+  // actually read), and the march's own edge/distance fade keeps artifacts subtle.
+  let reflRay = reflect(normalize(input.world - scene.camera.xyz), n);
+  let ssr = screen_reflection(input.world - scene.camera.xyz, reflRay, d);
+  color = mix(color, ssr.rgb, clamp(fresnel * 1.4, 0.0, 0.85) * ssr.a);
 
   // Refraction: reconstruct this fragment's screen UV from the clip varying, wobble
   // it with a calm low-frequency ripple (a touch more in the shallows), and sample
@@ -3812,6 +3850,7 @@ export class Renderer {
       entries: [
         { binding: 0, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'float' } },
         { binding: 1, visibility: GPUShaderStage.FRAGMENT, sampler: { type: 'filtering' } },
+        { binding: 2, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'float' } },
       ],
     });
     this.deferredWaterPipeline = this.device.createRenderPipeline({
@@ -5156,6 +5195,7 @@ export class Renderer {
                 entries: [
                   { binding: 0, resource: refractionTex.createView() },
                   { binding: 1, resource: this.compositeSampler },
+                  { binding: 2, resource: worldView },
                 ],
               }));
             } else {
