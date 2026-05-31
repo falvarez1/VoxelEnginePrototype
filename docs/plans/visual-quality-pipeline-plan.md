@@ -84,13 +84,15 @@ path is byte-for-byte unchanged and re-verified after every shared-module edit.
   (glow + teal-orange grade + vignette). Wide, soft glow. HDR scene target + a
   full multi-mip pyramid remain (blocked on un-tone-mapping the shared sky/water
   shaders — needs deferred-only copies, not a scene-format change).
-- Upgrade 7 (water): stages 1-2 done in the deferred overlay. Depth-graded
-  translucency, then refraction: the lit scene (sky + terrain) is snapshotted
-  into a refraction-source target before the water draws, and a dedicated
+- Upgrade 7 (water): stages 1-3 done in the deferred overlay. (1) Depth-graded
+  translucency; (2) refraction — the lit scene (sky + terrain) is snapshotted into
+  a refraction-source target before the water draws, and a dedicated
   `DEFERRED_WATER_SHADER` (a duplicate of the compat water shader, which stays
   byte-for-byte) samples the bed at a ripple-distorted screen UV and mixes it in
-  under the water tint — strongest in the shallows, opaque in the deep channel
-  and at distance. Terrain-integrated lake basins (worldgen) + SSR remain.
+  under the water tint; (3) SSR — the view ray reflects off the wave normal and
+  marches the G-buffer world for a hit, blending the lit terrain reflection over
+  the fresnel sky tint (fresnel-weighted, edge/distance-faded). Terrain-integrated
+  lake basins (worldgen) remain.
 - Upgrade 9 (profiles/automation): COMPLETE. Per-pass GPU timing in reports;
   query toggles `pass.shadow`/`pass.ssao`/`pass.bloom`; `renderGraph=compat|
   deferred`; and `visual.profile=cinematic|balanced|performance|flat` bundling
