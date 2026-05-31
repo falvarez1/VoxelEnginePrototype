@@ -1423,8 +1423,11 @@ fn fs_main(input: VOut) -> @location(0) vec4<f32> {
   c = c + textureSampleLevel(sceneTex, sceneSampler, input.uv + vec2<f32>(-0.5,  0.5) * texel, 0.0).rgb;
   c = c + textureSampleLevel(sceneTex, sceneSampler, input.uv + vec2<f32>( 0.5,  0.5) * texel, 0.0).rgb;
   c = c * 0.25;
-  let threshold = 0.70;
-  let knee = 0.25;
+  // HDR threshold: the scene is now linear radiance, so true highlights (sun, snow,
+  // glints) sit above 1.0 while lit ground sits below — a ~1.0 knee isolates the
+  // emissive highlights instead of everything merely-bright (the LDR pass used 0.70).
+  let threshold = 1.0;
+  let knee = 0.6;
   let br = max(c.r, max(c.g, c.b));
   let soft = clamp(br - threshold + knee, 0.0, 2.0 * knee);
   let contrib = max(soft * soft / (4.0 * knee + 0.0001), max(br - threshold, 0.0)) / max(br, 0.0001);
@@ -1462,15 +1465,28 @@ fn fs_v(input: VOut) -> @location(0) vec4<f32> { return vec4<f32>(blur(input.uv,
 // with the compat path and tone-map themselves, so going HDR needs a separate
 // deferred-only copy of those rather than a scene-format change here.)
 const BLOOM_SHADER = /* wgsl */`
-@group(0) @binding(0) var sceneTex: texture_2d<f32>;
-@group(0) @binding(1) var bloomTex: texture_2d<f32>;
-@group(0) @binding(2) var sceneSampler: sampler;
+${SCENE_WGSL}
+@group(0) @binding(1) var sceneTex: texture_2d<f32>;
+@group(0) @binding(2) var bloomTex: texture_2d<f32>;
+@group(0) @binding(3) var sceneSampler: sampler;
 ${BLOOM_FULLSCREEN_VS}
+// Same filmic curve the forward/deferred terrain used; tone-mapping now lives here
+// (HDR bloom) so the linear scene + glow are mapped to the display together.
+fn tone_map(color: vec3<f32>) -> vec3<f32> {
+  let exposed = max(color * max(scene.visual.x, 0.01), vec3<f32>(0.0));
+  let mapped = exposed / (exposed + vec3<f32>(1.0));
+  let gamma = pow(mapped, vec3<f32>(1.0 / 2.2));
+  let luma = dot(gamma, vec3<f32>(0.2126, 0.7152, 0.0722));
+  let saturated = mix(vec3<f32>(luma), gamma, 1.27);
+  return clamp((saturated - vec3<f32>(0.5)) * 1.16 + vec3<f32>(0.5), vec3<f32>(0.0), vec3<f32>(1.0));
+}
 @fragment
 fn fs_main(input: VOut) -> @location(0) vec4<f32> {
   let scene = textureSampleLevel(sceneTex, sceneSampler, input.uv, 0.0).rgb;
   let bloom = textureSampleLevel(bloomTex, sceneSampler, input.uv, 0.0).rgb;
-  var graded = scene + bloom * 0.9;
+  // Bloom is light: add it to the scene in LINEAR, then tone-map the sum so the glow
+  // rolls off with the rest of the highlights instead of clipping to white.
+  var graded = tone_map(scene + bloom * 1.0);
   // Subtle teal-orange cinematic color grade (Photon Upgrade 6): cool the
   // shadows toward blue-teal, warm the highlights, by luma — a gentle filmic
   // split-tone kept near 1.0 so it reads as cohesion, not a heavy LUT.
@@ -1845,8 +1861,12 @@ fn fs_main(input: VOut) -> @location(0) vec4<f32> {
   if (shadow.params.x > 0.5 && dot(worldSample.xyz, worldSample.xyz) < 160.0 * 160.0) {
     lit = lit * contact_shadow(worldSample.xyz, n);
   }
+  // Output LINEAR radiance (no tone_map here): the HDR scene target carries it to
+  // the bloom present pass, which tone-maps the scene + bloom together (Upgrade 6
+  // HDR bloom). apply_atmosphere runs in the same pre-tone-map space it always did,
+  // so the terrain result is identical once the present re-applies the same curve.
   let hazed = apply_atmosphere(lit, world);
-  return vec4<f32>(tone_map(hazed), 1.0);
+  return vec4<f32>(hazed, 1.0);
 }`;
 
 const TERRAIN_SHADER = /* wgsl */`
@@ -2388,6 +2408,16 @@ fn fs_main(input: VertexOut) -> @location(0) vec4<f32> {
 }
 `;
 
+// Deferred sky (HDR bloom): the same sky, but writing LINEAR radiance into the HDR
+// scene target instead of tone-mapping itself (the bloom present tone-maps the whole
+// scene). The *0.88 mirrors the sky tone_map's exposure trim so the present's
+// terrain curve lands the sky at the same brightness. Derived from SKY_SHADER by a
+// single return swap so the two never drift (the now-unused tone_map fn is benign).
+const DEFERRED_SKY_SHADER = SKY_SHADER.replace(
+  'return vec4<f32>(tone_map(color), 1.0);',
+  'return vec4<f32>(color * 0.88, 1.0);',
+);
+
 const CLUSTER_CULL_SHADER = /* wgsl */`
 struct CullParams {
   planes: array<vec4<f32>, 6>,
@@ -2859,7 +2889,9 @@ fn fs_main(input: VertexOut) -> @location(0) vec4<f32> {
   let lowSun = clamp(1.0 - sunDir.y * 1.35, 0.0, 1.0);
   let waterFog = mix(vec3<f32>(0.36, 0.50, 0.60), vec3<f32>(0.96, 0.62, 0.28), clamp(sunSide * 0.66 + lowSun * 0.08, 0.0, 1.0));
   color = mix(color, waterFog, fog * 0.86);
-  color = pow((color * scene.visual.x) / (color * scene.visual.x + vec3<f32>(1.0)), vec3<f32>(1.0 / 2.2));
+  // Output LINEAR (no tone-map/gamma here): the deferred water writes into the HDR
+  // scene target and the bloom present pass tone-maps it with the rest of the scene.
+  // The refraction/SSR samples below read that same linear scene snapshot.
 
   // Screen-space reflection: reflect the view ray off the wave normal and march the
   // G-buffer for the lit terrain behind it, blending any hit in over the flat sky
@@ -3218,6 +3250,8 @@ export class Renderer {
   uniformBuffer!: GPUBuffer;
   uniformBindGroup!: GPUBindGroup;
   skyPipeline!: GPURenderPipeline;
+  // Deferred sky writes LINEAR radiance into the HDR scene target (HDR bloom).
+  deferredSkyPipeline!: GPURenderPipeline;
   terrainPipeline!: GPURenderPipeline;
   waterPipeline!: GPURenderPipeline;
   vegetationPipeline!: GPURenderPipeline;
@@ -3402,7 +3436,10 @@ export class Renderer {
       shadowFormat: DEPTH_FORMAT,
       shadowSize: SHADOW_MAP_SIZE,
       deferred: this.renderGraphMode === 'deferred',
-      sceneColorFormat: this.format,
+      // HDR scene target (Upgrade 6 HDR bloom): the deferred sky/terrain/water write
+      // linear radiance here; the bloom present pass tone-maps to the swapchain. The
+      // refraction-source copy follows this format (see RenderTargets).
+      sceneColorFormat: 'rgba16float',
     });
     // Alias the registry's shadow handles so the bind groups/passes below keep
     // using this.shadowDepth* unchanged.
@@ -3616,6 +3653,16 @@ export class Renderer {
       primitive: { topology: 'triangle-list', cullMode: 'none' },
       depthStencil: { format: DEPTH_FORMAT, depthWriteEnabled: false, depthCompare: 'always' },
     });
+    // Deferred sky: linear output into the HDR scene target (rgba16float).
+    const deferredSkyModule = this.createShaderModuleChecked('deferred sky shader', DEFERRED_SKY_SHADER);
+    this.deferredSkyPipeline = this.device.createRenderPipeline({
+      label: 'deferred sky pipeline',
+      layout: pipelineLayout,
+      vertex: { module: deferredSkyModule, entryPoint: 'vs_main' },
+      fragment: { module: deferredSkyModule, entryPoint: 'fs_main', targets: [{ format: 'rgba16float' }] },
+      primitive: { topology: 'triangle-list', cullMode: 'none' },
+      depthStencil: { format: DEPTH_FORMAT, depthWriteEnabled: false, depthCompare: 'always' },
+    });
 
     this.terrainPipeline = this.device.createRenderPipeline({
       label: 'terrain pipeline',
@@ -3725,9 +3772,10 @@ export class Renderer {
     this.bloomCompositeBindGroupLayout = this.device.createBindGroupLayout({
       label: 'bloom composite bind group layout',
       entries: [
-        { binding: 0, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'float' } },
+        { binding: 0, visibility: GPUShaderStage.FRAGMENT, buffer: { type: 'uniform' } },
         { binding: 1, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'float' } },
-        { binding: 2, visibility: GPUShaderStage.FRAGMENT, sampler: { type: 'filtering' } },
+        { binding: 2, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'float' } },
+        { binding: 3, visibility: GPUShaderStage.FRAGMENT, sampler: { type: 'filtering' } },
       ],
     });
     this.bloomPipeline = this.device.createRenderPipeline({
@@ -3758,7 +3806,8 @@ export class Renderer {
       // group 2 = near shadow cascade (reuses the shadow-sample layout).
       layout: this.device.createPipelineLayout({ bindGroupLayouts: [this.deferredLightBindGroupLayout, this.shadowSampleBindGroupLayout, this.shadowSampleBindGroupLayout] }),
       vertex: { module: deferredLightModule, entryPoint: 'vs_main' },
-      fragment: { module: deferredLightModule, entryPoint: 'fs_main', targets: [{ format: this.format }] },
+      // Writes linear radiance into the HDR scene target.
+      fragment: { module: deferredLightModule, entryPoint: 'fs_main', targets: [{ format: 'rgba16float' }] },
       primitive: { topology: 'triangle-list', cullMode: 'none' },
     });
 
@@ -3903,7 +3952,8 @@ export class Renderer {
       fragment: {
         module: deferredWaterModule,
         entryPoint: 'fs_main',
-        targets: [{ format: this.format }],
+        // Writes linear radiance into the HDR scene target.
+        targets: [{ format: 'rgba16float' }],
       },
       primitive: { topology: 'triangle-list', cullMode: 'none' },
       depthStencil: { format: DEPTH_FORMAT, depthWriteEnabled: true, depthCompare: 'less' },
@@ -5257,7 +5307,8 @@ export class Renderer {
         });
         if (this.settings.skyEnabled && this.settings.debugView === 0) {
           skyPass.setBindGroup(0, this.uniformBindGroup);
-          skyPass.setPipeline(this.skyPipeline);
+          // Deferred sky writes linear radiance into the HDR scene target.
+          skyPass.setPipeline(this.deferredSkyPipeline);
           skyPass.draw(3);
         }
         skyPass.end();
@@ -5309,7 +5360,11 @@ export class Renderer {
             { width: sceneColorTex.width, height: sceneColorTex.height, depthOrArrayLayers: 1 },
           );
         }
-        if (drawWater || drawVeg) {
+        // Water overlay into the HDR scene (so its glints bloom + it tone-maps with
+        // the scene). Vegetation is drawn AFTER the bloom present instead (it would
+        // otherwise need a deferred-linear veg shader to live in the HDR buffer; a
+        // post-tone-map pass keeps the existing veg shader and lets it self-light).
+        if (drawWater && this.water && refractWater && refractionTex) {
           const opass = encoder.beginRenderPass({
             label: 'deferred forward overlay pass',
             colorAttachments: [{ view: sceneTargetView, loadOp: 'load', storeOp: 'store' }],
@@ -5317,32 +5372,20 @@ export class Renderer {
             timestampWrites: this.frameGraph.timed('deferred-overlay', 'render', false),
           });
           opass.setBindGroup(0, this.uniformBindGroup);
-          if (drawWater && this.water) {
-            if (refractWater && refractionTex) {
-              // Refracting water: samples the riverbed snapshot (group 1) and
-              // composites the gently-distorted bed in-shader (opaque output).
-              opass.setPipeline(this.deferredWaterPipeline);
-              opass.setBindGroup(1, this.device.createBindGroup({
-                layout: this.deferredWaterBindGroupLayout,
-                entries: [
-                  { binding: 0, resource: refractionTex.createView() },
-                  { binding: 1, resource: this.compositeSampler },
-                  { binding: 2, resource: worldView },
-                ],
-              }));
-            } else {
-              opass.setPipeline(this.waterPipeline);
-            }
-            opass.setVertexBuffer(0, this.water.vertexBuffer);
-            opass.setIndexBuffer(this.water.indexBuffer, 'uint32');
-            opass.drawIndexed(this.water.indexCount);
-          }
-          if (drawVeg && vegetationBatchBuffer) {
-            opass.setPipeline(this.vegetationPipeline);
-            opass.setVertexBuffer(0, this.treeVertexBuffer);
-            opass.setVertexBuffer(1, vegetationBatchBuffer);
-            opass.draw(this.treeVertexCount, vegetationInstances);
-          }
+          // Refracting water: samples the riverbed snapshot (group 1) and composites
+          // the gently-distorted bed in-shader (linear output into the HDR scene).
+          opass.setPipeline(this.deferredWaterPipeline);
+          opass.setBindGroup(1, this.device.createBindGroup({
+            layout: this.deferredWaterBindGroupLayout,
+            entries: [
+              { binding: 0, resource: refractionTex.createView() },
+              { binding: 1, resource: this.compositeSampler },
+              { binding: 2, resource: worldView },
+            ],
+          }));
+          opass.setVertexBuffer(0, this.water.vertexBuffer);
+          opass.setIndexBuffer(this.water.indexBuffer, 'uint32');
+          opass.drawIndexed(this.water.indexCount);
           opass.end();
         }
         // Bloom blur pyramid + present (Photon Upgrade 6): a half-res prefilter +
@@ -5402,7 +5445,7 @@ export class Renderer {
             }));
             blurVPass.draw(3);
             blurVPass.end();
-            // 4. Present: scene + glow -> swapchain (grade + vignette in-shader).
+            // 4. Present: tone-map (HDR scene + glow) -> swapchain (grade + vignette).
             const presentPass = encoder.beginRenderPass({
               label: 'bloom present pass',
               colorAttachments: [{ view: colorView, clearValue: { r: 0, g: 0, b: 0, a: 1 }, loadOp: 'clear', storeOp: 'store' }],
@@ -5411,30 +5454,58 @@ export class Renderer {
             presentPass.setBindGroup(0, this.device.createBindGroup({
               layout: this.bloomCompositeBindGroupLayout,
               entries: [
-                { binding: 0, resource: sceneTargetView },
-                { binding: 1, resource: aView },
-                { binding: 2, resource: this.compositeSampler },
+                { binding: 0, resource: { buffer: this.uniformBuffer } },
+                { binding: 1, resource: sceneTargetView },
+                { binding: 2, resource: aView },
+                { binding: 3, resource: this.compositeSampler },
               ],
             }));
             presentPass.draw(3);
             presentPass.end();
-          } else {
-            // Bloom off: plain composite of the scene colour to the swapchain.
+          } else if (bloomA) {
+            // Bloom off: still tone-map the HDR scene (now linear), just with no glow.
+            // Clear the bloom target to black, then run the same tone-mapping present
+            // so the grade + vignette stay consistent with the bloom-on path.
+            const aView = bloomA.createView();
+            const clearPass = encoder.beginRenderPass({
+              label: 'bloom-off clear pass',
+              colorAttachments: [{ view: aView, clearValue: { r: 0, g: 0, b: 0, a: 1 }, loadOp: 'clear', storeOp: 'store' }],
+              timestampWrites: this.frameGraph.timed('deferred-bloom', 'render', false),
+            });
+            clearPass.end();
             const presentPass = encoder.beginRenderPass({
               label: 'deferred present pass',
               colorAttachments: [{ view: colorView, clearValue: { r: 0, g: 0, b: 0, a: 1 }, loadOp: 'clear', storeOp: 'store' }],
-              timestampWrites: this.frameGraph.timed('deferred-bloom', 'render', false),
             });
-            presentPass.setPipeline(this.compositePipeline);
+            presentPass.setPipeline(this.bloomPipeline);
             presentPass.setBindGroup(0, this.device.createBindGroup({
-              layout: this.compositeBindGroupLayout,
+              layout: this.bloomCompositeBindGroupLayout,
               entries: [
-                { binding: 0, resource: sceneTargetView },
-                { binding: 1, resource: this.compositeSampler },
+                { binding: 0, resource: { buffer: this.uniformBuffer } },
+                { binding: 1, resource: sceneTargetView },
+                { binding: 2, resource: aView },
+                { binding: 3, resource: this.compositeSampler },
               ],
             }));
             presentPass.draw(3);
             presentPass.end();
+          }
+          // Vegetation is drawn AFTER tone-mapping, directly onto the swapchain in
+          // display space (its shader self-lights + tone-maps), depth-tested against
+          // the G-buffer depth so terrain occludes it. This avoids a deferred-linear
+          // veg shader just to live in the HDR scene buffer.
+          if (drawVeg && vegetationBatchBuffer) {
+            const vegPass = encoder.beginRenderPass({
+              label: 'deferred vegetation pass',
+              colorAttachments: [{ view: colorView, loadOp: 'load', storeOp: 'store' }],
+              depthStencilAttachment: { view: depthView, depthLoadOp: 'load', depthStoreOp: 'store' },
+            });
+            vegPass.setBindGroup(0, this.uniformBindGroup);
+            vegPass.setPipeline(this.vegetationPipeline);
+            vegPass.setVertexBuffer(0, this.treeVertexBuffer);
+            vegPass.setVertexBuffer(1, vegetationBatchBuffer);
+            vegPass.draw(this.treeVertexCount, vegetationInstances);
+            vegPass.end();
           }
         }
       }
