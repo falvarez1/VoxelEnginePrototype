@@ -81,11 +81,13 @@ path is byte-for-byte unchanged and re-verified after every shared-module edit.
 - Upgrade 5 (AO): SSAO now has its own pass (G-buffer world + normal,
   distance-culled) writing a single-channel target, then a 4x4 box-blur pass; the
   lighting pass samples the blurred AO. Reads as soft contact darkening, no grain.
-- Upgrade 6 (atmosphere/post): bloom is now a half-res blur pyramid — prefilter
-  (box downsample + soft-knee threshold) + separable Gaussian (H/V) + present
-  (glow + teal-orange grade + vignette). Wide, soft glow. HDR scene target + a
-  full multi-mip pyramid remain (blocked on un-tone-mapping the shared sky/water
-  shaders — needs deferred-only copies, not a scene-format change).
+- Upgrade 6 (atmosphere/post): COMPLETE. Bloom is a half-res blur pyramid
+  (prefilter + separable Gaussian) over an **HDR (rgba16float) scene target** —
+  the deferred sky/terrain/water write linear radiance, the prefilter thresholds in
+  linear, and the present adds the glow in linear then tone-maps the sum (so bloom
+  rolls off with the highlights) before the teal-orange grade + vignette. Sky uses a
+  one-line-derived linear variant; vegetation draws post-tone-map to avoid a third
+  shader dup. (A full multi-mip pyramid could still widen the glow further.)
 - Upgrade 7 (water): stages 1-3 done in the deferred overlay. (1) Depth-graded
   translucency; (2) refraction — the lit scene (sky + terrain) is snapshotted into
   a refraction-source target before the water draws, and a dedicated
